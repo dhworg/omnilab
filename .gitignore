@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Container / OS image artifacts
+output/
+*.iso
+*.qcow2
+*.raw
+*.img
+*.vhd
+*.vmdk
+
+# mkdocs build output
+site/
+
+# Editors / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Local-only secrets / state — never commit
+.env
+.envrc
+*.local
+*.local.yml
+*.local.yaml

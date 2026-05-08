@@ -1,0 +1,44 @@
+site_name: OmniLab
+site_description: Bootc-based Linux for ROS 2 + Gazebo developers
+site_url: https://dhworg.github.io/omnilab/
+repo_url: https://github.com/dhworg/omnilab
+repo_name: dhworg/omnilab
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+# TODO Phase D.10 per project-spec-v1.md "First steps" — expand nav with
+# install / hello-world / hardware quickstart / manifest reference /
+# troubleshooting.
+nav:
+  - Home: index.md
