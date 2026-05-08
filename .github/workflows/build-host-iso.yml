@@ -77,7 +77,7 @@ jobs:
             --type anaconda-iso \
             --rootfs xfs \
             --local \
-            omnilab-host:latest
+            localhost/omnilab-host:latest
           sudo chown -R "$(id -u):$(id -g)" output
           echo "--- output tree ---"
           find output -type f -printf '%p  %s bytes\n'
