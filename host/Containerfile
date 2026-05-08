@@ -10,7 +10,13 @@ FROM quay.io/fedora/fedora-bootc:42
 #
 # TODO Phase B.5 — switch XFCE to a Wayland session by default
 # (spec § Architecture → Layer 1: "Display server (Wayland), XFCE desktop").
+#
+# `--exclude=rootfiles`: rootfiles ships /root/.bash_logout etc. and its
+# cpio extraction fails with "mkdir /root/: File exists" against the
+# fedora-bootc base, which already provides /root/. We don't need its
+# stub dotfiles. (Phase B will manage /root and /etc/skel via overlay/.)
 RUN dnf -y install \
+        --exclude=rootfiles \
         @xfce-desktop-environment \
         podman \
     && dnf clean all \
