@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# /usr/bin/hello-omnilab — Phase A bootstrap proof-of-life banner.
+# Replaced in Phase B.5 when the omnilab CLI lands.
+set -euo pipefail
+
+cat <<'BANNER'
+
+========================================================================
+  OmniLab — bootc Linux for ROS 2 + Gazebo developers
+  Phase A bootstrap host image. The real CLI lands in Phase B.4.
+  Spec: https://github.com/dhworg/omnilab/blob/main/project-spec-v1.md
+========================================================================
+
+BANNER

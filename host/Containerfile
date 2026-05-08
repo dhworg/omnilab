@@ -1,0 +1,21 @@
+# Phase A Step 1 minimal bootc host image, per project-spec-v1.md
+# "First steps" → Phase A.1: Fedora bootc + XFCE + Podman + hello-omnilab.
+# No omnilab CLI, no project images, no skill-packs at this stage — those
+# layers arrive in Phase B.
+FROM quay.io/fedora/fedora-bootc:42
+
+# Spec stack table: Desktop = XFCE on Wayland; Container runtime = Podman.
+# Phase B.5 expands this with nvidia-container-toolkit, udev rules,
+# group setup, branding, and the omnilab CLI baked in.
+#
+# TODO Phase B.5 — switch XFCE to a Wayland session by default
+# (spec § Architecture → Layer 1: "Display server (Wayland), XFCE desktop").
+RUN dnf -y install \
+        @xfce-desktop-environment \
+        podman \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf /var/log/dnf*
+
+# Proof-of-life banner. Replaced in Phase B.5 when the omnilab CLI lands.
+COPY hello-omnilab /usr/bin/hello-omnilab
+RUN chmod +x /usr/bin/hello-omnilab
