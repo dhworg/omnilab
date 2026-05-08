@@ -1,0 +1,90 @@
+# Phase A Step 1 CI: build the omnilab-host OCI image, push to GHCR on
+# main, bake an installable ISO with bootc-image-builder, and upload that
+# ISO as a workflow artifact.
+#
+# See project-spec-v1.md "First steps" → Phase A.1 and "Development
+# workflow" → "CI matrix". Phase B.6 adds smoke-tests.yml against the
+# qcow2 in a VM.
+name: build-host-iso
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: dhworg/omnilab-host
+  BIB_IMAGE: quay.io/centos-bootc/bootc-image-builder:latest
+
+# Cancel in-flight PR runs when a new commit is pushed to the PR branch.
+# Always let main runs finish so we don't lose published artifacts.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build host image and ISO
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build host OCI image
+        run: |
+          sudo podman build \
+            --tag omnilab-host:latest \
+            --file host/Containerfile \
+            host/
+          sudo podman images localhost/omnilab-host
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" \
+            | sudo podman login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+
+      - name: Push host OCI image to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          sudo podman tag omnilab-host:latest "$REGISTRY/$IMAGE_NAME:latest"
+          sudo podman tag omnilab-host:latest "$REGISTRY/$IMAGE_NAME:sha-${GITHUB_SHA}"
+          sudo podman push "$REGISTRY/$IMAGE_NAME:latest"
+          sudo podman push "$REGISTRY/$IMAGE_NAME:sha-${GITHUB_SHA}"
+
+      - name: Pull bootc-image-builder
+        run: sudo podman pull "$BIB_IMAGE"
+
+      - name: Build ISO with bootc-image-builder
+        run: |
+          mkdir -p output
+          sudo podman run --rm \
+            --privileged \
+            --security-opt label=type:unconfined_t \
+            --volume "$PWD/output:/output" \
+            --volume "$PWD/host/config.toml:/config.toml:ro" \
+            --volume /var/lib/containers/storage:/var/lib/containers/storage \
+            "$BIB_IMAGE" \
+            --type anaconda-iso \
+            --local \
+            omnilab-host:latest
+          sudo chown -R "$(id -u):$(id -g)" output
+          echo "--- output tree ---"
+          find output -type f -printf '%p  %s bytes\n'
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnilab-host-iso
+          path: output/**/*.iso
+          retention-days: 14
+          if-no-files-found: error
