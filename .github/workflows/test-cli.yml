@@ -1,0 +1,52 @@
+# Phase B sub-step 3 CI: lint + unit-test the omnilab CLI Python package.
+# Path-filtered so unrelated changes don't fire it.
+name: test-cli
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cli/**'
+      - '.github/workflows/test-cli.yml'
+  pull_request:
+    paths:
+      - 'cli/**'
+      - '.github/workflows/test-cli.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Lint + pytest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install (editable + dev extras)
+        working-directory: cli/omnilab
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Ruff lint
+        working-directory: cli/omnilab
+        run: ruff check .
+
+      - name: Pytest
+        working-directory: cli/omnilab
+        run: pytest --cov=omnilab --cov-report=term-missing

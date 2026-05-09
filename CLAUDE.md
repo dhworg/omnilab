@@ -87,8 +87,11 @@ choice is decoupled.
   `:latest` and `:sha-<commit>` mirrors.
 - **Anything that needs the test machine — leave a `TODO Phase X.Y` with
   a phase-and-step pointer.** Do not stub fake values to make CI green.
-- **The `omnilab` CLI runs from `/var/home/parth/omnilab/` during dev**
-  (mutable `/var`); baked into the host image only at release.
+- **The `omnilab` CLI runs from `/var/home/parth/omnilab/cli/omnilab/`
+  during dev** (mutable `/var`). Install editable on the test machine
+  with `pip install --user -e .[dev]`; edits on Mac → rsync → effective
+  on next invocation, no host image rebuild. Baked into the host image
+  only at release time (Phase B.5+).
 - **Defaults that don't suck** (per spec §"v1 must-do" #6): GUI on by
   default, shadows off, single sun, 320x240 @ 15Hz cameras, RMW pinned to
   Cyclone DDS, non-zero `ROS_DOMAIN_ID`, sim caps at 1.0 RTF.
