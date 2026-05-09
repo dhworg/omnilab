@@ -5,7 +5,11 @@
 # to verify it.
 #
 # Exits non-zero with a count of failed checks; otherwise exits 0.
-set -uo pipefail
+#
+# Note: -u (nounset) is intentionally NOT set. ROS's setup.bash references
+# AMENT_TRACE_SETUP_FILES without a default and trips nounset; that's an
+# upstream pattern we work around rather than fight.
+set -o pipefail
 
 source /opt/ros/jazzy/setup.bash
 source /opt/micro-ros-agent/install/setup.bash
