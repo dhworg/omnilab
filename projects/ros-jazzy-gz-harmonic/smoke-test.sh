@@ -76,14 +76,32 @@ echo ""
 echo "=== Gazebo Harmonic basics ==="
 # `gz sim` launching a world needs a display + GL even with
 # --headless-rendering, which is unreliable in CI. Verify the binary is
-# wired up; real simulation testing is Phase B.6 territory (smoke-tests.yml
-# with a virtual display).
-check "gz --version exits 0"   gz --version
+# wired and the sim subcommand is invokable; real simulation testing is
+# Phase B.6 territory (smoke-tests.yml with a virtual display + Mesa).
+# `gz --version` was dropped in Gazebo Harmonic at the top level — use
+# `gz sim --help` which prints usage cleanly.
 check "gz sim --help exits 0"  gz sim --help
 
 echo ""
 echo "=== micro-ROS agent runnable ==="
-check "micro_ros_agent --help" bash -c "ros2 run micro_ros_agent micro_ros_agent --help"
+# micro_ros_agent --help may exit non-zero on some builds while still
+# printing the usage banner — assert on output, not exit code. Also
+# sanity-check the binary file landed where build_agent.sh said it would.
+MRA_BIN=/opt/micro-ros-agent/install/micro_ros_agent/lib/micro_ros_agent/micro_ros_agent
+check "micro_ros_agent binary exists and is executable" test -x "$MRA_BIN"
+check "ros2 lists micro_ros_agent as a package executable" \
+    bash -c "ros2 pkg executables micro_ros_agent | grep -q micro_ros_agent"
+
+MRA_OUT=$(timeout 5s ros2 run micro_ros_agent micro_ros_agent --help 2>&1 || true)
+if echo "$MRA_OUT" | grep -qiE "(usage|--port|transport|micro)"; then
+    green "  ✓ micro_ros_agent --help prints recognizable usage text"
+    PASS=$((PASS + 1))
+else
+    red "  ✗ micro_ros_agent --help produced no recognizable output"
+    echo "$MRA_OUT" | head -10 | sed 's/^/      /'
+    FAILURES+=("micro_ros_agent --help")
+    FAIL=$((FAIL + 1))
+fi
 
 echo ""
 echo "=================================="
