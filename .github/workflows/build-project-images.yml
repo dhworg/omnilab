@@ -1,0 +1,69 @@
+# Phase B sub-step 2 CI: build the ros-jazzy-gz-harmonic project image,
+# run the in-image smoke test, and on push to main publish to GHCR as
+# `:latest` and `:sha-<commit>`. PR builds skip the GHCR push.
+#
+# Path-filtered so changes that only touch host/, cli/, etc. don't fire
+# this expensive build.
+name: build-project-images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'projects/**'
+      - '.github/workflows/build-project-images.yml'
+  pull_request:
+    paths:
+      - 'projects/**'
+      - '.github/workflows/build-project-images.yml'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: dhworg/ros-jazzy-gz-harmonic
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build + smoke + push (ros-jazzy-gz-harmonic)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build project image
+        run: |
+          sudo podman build \
+            --tag ros-jazzy-gz-harmonic:latest \
+            --file projects/ros-jazzy-gz-harmonic/Containerfile \
+            projects/ros-jazzy-gz-harmonic/
+          sudo podman images localhost/ros-jazzy-gz-harmonic
+
+      - name: Smoke test
+        run: |
+          sudo podman run --rm localhost/ros-jazzy-gz-harmonic:latest \
+            bash /usr/local/bin/smoke-test.sh
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" \
+            | sudo podman login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
+
+      - name: Push project image to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          sudo podman tag localhost/ros-jazzy-gz-harmonic:latest "$REGISTRY/$IMAGE_NAME:latest"
+          sudo podman tag localhost/ros-jazzy-gz-harmonic:latest "$REGISTRY/$IMAGE_NAME:sha-${GITHUB_SHA}"
+          sudo podman push "$REGISTRY/$IMAGE_NAME:latest"
+          sudo podman push "$REGISTRY/$IMAGE_NAME:sha-${GITHUB_SHA}"

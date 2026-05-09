@@ -1,0 +1,140 @@
+# projects/ros-jazzy-gz-harmonic — default OmniLab project image.
+# Phase B sub-step 2 per project-spec-v1.md "First steps" → Phase B.3.
+#
+# Layers, in order:
+#   1. Base + locale + build deps
+#   2. ROS 2 Jazzy desktop + nav2 + turtlebot3 + ros-gz + cyclonedds RMW
+#   3. Gazebo Harmonic
+#   4. Hardware toolchain (arduino-cli, platformio, esptool, dfu-util,
+#      stm32flash, picotool, picocom, screen, v4l-utils)
+#   5. micro-ROS agent (built from source against Jazzy)
+#   6. Defaults: RMW pinned to Cyclone DDS, auto-source ROS + micro-ROS
+#
+# End users pin this by SHA256 digest from omnilab.yaml; tags only exist
+# for CI mirrors.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    TZ=Etc/UTC
+
+# --- 1. Base apt + locale -------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg lsb-release locales software-properties-common \
+        sudo build-essential cmake git wget pkg-config \
+        python3-pip pipx \
+    && locale-gen en_US.UTF-8 \
+    && install -d -m 0755 /etc/apt/keyrings \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- 2. ROS 2 Jazzy ------------------------------------------------------
+# packages.ros.org GPG + apt source, then ros-jazzy-desktop and the bits
+# the spec calls for. Cyclone DDS is the spec-pinned RMW.
+RUN curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+        | gpg --dearmor -o /etc/apt/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+        > /etc/apt/sources.list.d/ros2.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ros-jazzy-desktop \
+        ros-jazzy-rmw-cyclonedds-cpp \
+        ros-jazzy-ros-gz \
+        ros-jazzy-nav2-bringup \
+        ros-jazzy-turtlebot3 \
+        ros-jazzy-turtlebot3-msgs \
+        ros-jazzy-turtlebot3-simulations \
+        python3-colcon-common-extensions \
+        python3-rosdep \
+        python3-vcstool \
+    && (rosdep init || true) \
+    && rosdep update --rosdistro=jazzy \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- 3. Gazebo Harmonic --------------------------------------------------
+# packages.osrfoundation.org ships its key already dearmored.
+RUN curl -fsSL https://packages.osrfoundation.org/gazebo.gpg \
+        -o /etc/apt/keyrings/gazebo-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/gazebo-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+        > /etc/apt/sources.list.d/gazebo-stable.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gz-harmonic \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- 4. Hardware toolchain ----------------------------------------------
+# apt-installable: dfu-util, stm32flash, picocom, screen, v4l-utils.
+# libusb-1.0-0-dev is needed to build picotool below.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        dfu-util stm32flash picocom screen v4l-utils \
+        libusb-1.0-0-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# arduino-cli static binary into /usr/local/bin (system-wide).
+RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh \
+        | BINDIR=/usr/local/bin sh
+
+# pipx-installed tools (system-wide via PIPX_BIN_DIR).
+ENV PIPX_HOME=/opt/pipx \
+    PIPX_BIN_DIR=/usr/local/bin
+RUN pipx install platformio \
+ && pipx install esptool
+
+# picotool — no apt package on noble for v2+, build from source. The
+# CMake hard-requires PICO_SDK_PATH (it pulls a few headers from the
+# Pico SDK), so we clone the SDK alongside, build picotool, then drop
+# both source trees. The compiled `picotool` binary has no runtime
+# dep on the SDK.
+RUN git clone --depth 1 https://github.com/raspberrypi/pico-sdk.git /tmp/pico-sdk \
+ && git clone --depth 1 https://github.com/raspberrypi/picotool.git /tmp/picotool \
+ && cd /tmp/picotool && mkdir build && cd build \
+ && cmake .. -DPICO_SDK_PATH=/tmp/pico-sdk -DCMAKE_INSTALL_PREFIX=/usr/local \
+ && make -j"$(nproc)" \
+ && make install \
+ && rm -rf /tmp/picotool /tmp/pico-sdk
+
+# --- 5. micro-ROS agent (built from source for Jazzy) -------------------
+# /opt/micro-ros-agent/install/setup.bash sourced by /etc/bash.bashrc.
+# create_agent_ws.sh + build_agent.sh is the canonical micro_ros_setup
+# flow for building the agent from source.
+RUN mkdir -p /opt/micro-ros-agent/src \
+ && cd /opt/micro-ros-agent \
+ && git clone -b jazzy https://github.com/micro-ROS/micro_ros_setup.git src/micro_ros_setup \
+ && bash -c " \
+        set -e ; \
+        source /opt/ros/jazzy/setup.bash ; \
+        apt-get update ; \
+        rosdep install --from-paths src --ignore-src -y --rosdistro=jazzy ; \
+        colcon build ; \
+        source install/local_setup.bash ; \
+        ros2 run micro_ros_setup create_agent_ws.sh ; \
+        ros2 run micro_ros_setup build_agent.sh ; \
+        echo '=== post-build: setup.bash locations under /opt/micro-ros-agent ===' ; \
+        find /opt/micro-ros-agent -name 'setup.bash' -path '*/install/*' 2>/dev/null ; \
+        echo '=== post-build: micro_ros_agent binary ===' ; \
+        find /opt/micro-ros-agent -name 'micro_ros_agent' -executable 2>/dev/null ; \
+    " \
+ && rm -rf /var/lib/apt/lists/*
+
+# --- 6. Defaults: RMW pin + auto-source ----------------------------------
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+    ROS_DOMAIN_ID=42
+
+RUN { \
+        echo 'source /opt/ros/jazzy/setup.bash' ; \
+        echo '# build_agent.sh creates a nested workspace; source whichever' ; \
+        echo '# install/setup.bash actually exposes micro_ros_agent.' ; \
+        echo 'for _setup in /opt/micro-ros-agent/install/setup.bash \\' ; \
+        echo '              /opt/micro-ros-agent/firmware/install/setup.bash \\' ; \
+        echo '              /opt/micro-ros-agent/firmware/agent_ws/install/setup.bash ; do' ; \
+        echo '    [ -f "$_setup" ] && source "$_setup"' ; \
+        echo 'done' ; \
+        echo 'unset _setup' ; \
+    } >> /etc/bash.bashrc
+
+# Smoke test ships in the image so it can be run via `podman run`
+# without volume mounts. CI invokes it; end users can too.
+COPY smoke-test.sh /usr/local/bin/smoke-test.sh
+RUN chmod +x /usr/local/bin/smoke-test.sh
+
+CMD ["/bin/bash"]
