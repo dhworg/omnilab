@@ -10,7 +10,13 @@ name: build-host-iso
 on:
   push:
     branches: [main]
+    paths:
+      - 'host/**'
+      - '.github/workflows/build-host-iso.yml'
   pull_request:
+    paths:
+      - 'host/**'
+      - '.github/workflows/build-host-iso.yml'
   workflow_dispatch:
 
 env:
