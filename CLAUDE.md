@@ -15,8 +15,13 @@ v1 deliverable: bootable ISO that turns a fresh laptop into a working sim
 
 **Phase A Step 1 — DONE.** Repo scaffold + working CI
 (`.github/workflows/build-host-iso.yml`) that produces a minimal host
-ISO. The host image at this point is just Fedora bootc + XFCE + Podman +
+ISO. The host image at this point is Fedora bootc + XFCE + Podman +
 a `hello-omnilab` script. No CLI, no project images, no skill-packs.
+
+> Desktop choice: the spec was amended to **KDE Plasma 6** after Phase
+> A.1 shipped (commit "docs: switch desktop choice from XFCE to KDE
+> Plasma 6"). The Phase A.1 ISO still has XFCE because it predates the
+> amendment; Phase B.5 host rebuild will replace it with KDE.
 
 **Next: Phase A Step 2** (test machine bootstrap — human-driven).
 Download ISO from Actions, flash to USB, install on the dGPU machine, set
@@ -29,7 +34,7 @@ See `project-spec-v1.md` "First steps" for the full phase plan
 ## Architecture in 5 lines
 
 1. **Host (`omnilab-host`)** — Fedora bootc OCI image, atomic updates via
-   `bootc upgrade`. Contains kernel, XFCE-on-Wayland, Podman +
+   `bootc upgrade`. Contains kernel, KDE Plasma 6 on Wayland, Podman +
    nvidia-container-toolkit, GPU drivers, udev rules, the `omnilab` CLI.
    No ROS.
 2. **Project images (`omnilab-projects`)** — OCI images with pinned
@@ -61,7 +66,7 @@ See `project-spec-v1.md` "First steps" for the full phase plan
 | Project base | Ubuntu 24.04 |
 | ROS 2 | Jazzy Jalisco (LTS to May 2029) |
 | Simulator | Gazebo Harmonic (LTS to Sep 2028) |
-| Desktop | XFCE on Wayland |
+| Desktop | KDE Plasma 6 on Wayland |
 | Container runtime | Podman + nvidia-container-toolkit |
 | GPU tiers | iGPU (Intel/AMD) baseline; NVIDIA proprietary tier |
 | CLI language | Python |
