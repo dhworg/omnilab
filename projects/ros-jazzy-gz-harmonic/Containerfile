@@ -88,9 +88,9 @@ RUN pipx install platformio \
 RUN git clone --depth 1 https://github.com/raspberrypi/pico-sdk.git /tmp/pico-sdk \
  && git clone --depth 1 https://github.com/raspberrypi/picotool.git /tmp/picotool \
  && cd /tmp/picotool && mkdir build && cd build \
- && cmake .. -DPICO_SDK_PATH=/tmp/pico-sdk -DPICOTOOL_FLAT_INSTALL=1 \
+ && cmake .. -DPICO_SDK_PATH=/tmp/pico-sdk -DCMAKE_INSTALL_PREFIX=/usr/local \
  && make -j"$(nproc)" \
- && make install DESTDIR=/usr/local \
+ && make install \
  && rm -rf /tmp/picotool /tmp/pico-sdk
 
 # --- 5. micro-ROS agent (built from source for Jazzy) -------------------
@@ -106,9 +106,13 @@ RUN mkdir -p /opt/micro-ros-agent/src \
         apt-get update ; \
         rosdep install --from-paths src --ignore-src -y --rosdistro=jazzy ; \
         colcon build ; \
-        source install/setup.bash ; \
+        source install/local_setup.bash ; \
         ros2 run micro_ros_setup create_agent_ws.sh ; \
         ros2 run micro_ros_setup build_agent.sh ; \
+        echo '=== post-build: setup.bash locations under /opt/micro-ros-agent ===' ; \
+        find /opt/micro-ros-agent -name 'setup.bash' -path '*/install/*' 2>/dev/null ; \
+        echo '=== post-build: micro_ros_agent binary ===' ; \
+        find /opt/micro-ros-agent -name 'micro_ros_agent' -executable 2>/dev/null ; \
     " \
  && rm -rf /var/lib/apt/lists/*
 
@@ -118,7 +122,14 @@ ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
 
 RUN { \
         echo 'source /opt/ros/jazzy/setup.bash' ; \
-        echo 'source /opt/micro-ros-agent/install/setup.bash' ; \
+        echo '# build_agent.sh creates a nested workspace; source whichever' ; \
+        echo '# install/setup.bash actually exposes micro_ros_agent.' ; \
+        echo 'for _setup in /opt/micro-ros-agent/install/setup.bash \\' ; \
+        echo '              /opt/micro-ros-agent/firmware/install/setup.bash \\' ; \
+        echo '              /opt/micro-ros-agent/firmware/agent_ws/install/setup.bash ; do' ; \
+        echo '    [ -f "$_setup" ] && source "$_setup"' ; \
+        echo 'done' ; \
+        echo 'unset _setup' ; \
     } >> /etc/bash.bashrc
 
 # Smoke test ships in the image so it can be run via `podman run`
