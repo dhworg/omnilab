@@ -9,7 +9,9 @@ FROM quay.io/fedora/fedora-bootc:42
 #  - install_weak_deps=False drops Recommends/Suggests dnf would otherwise pull
 #  - PIM/Akonadi stack — mail, calendar, address book; irrelevant for a
 #    robotics dev OS, biggest single trim
-#  - printer drivers + GUIs — no print workflow on a sim laptop
+#  - printer GUIs — no print workflow on a sim laptop. We keep cups
+#    itself because plasma-print-manager hard-requires it; ~50 MB and
+#    masking the daemon (Phase B.5) is cheaper than fighting deps.
 #  - accessibility apps we won't theme (kmag/kmousetool/kmouth/orca)
 #  - sample wallpapers (replaced with OmniLab branding in Phase B.5)
 #
@@ -29,9 +31,7 @@ RUN dnf -y install \
         --exclude='kalarm*' \
         --exclude='ktnef*' \
         --exclude='akregator*' \
-        --exclude='cups' \
-        --exclude='cups-filters' \
-        --exclude='print-manager' \
+        --exclude='plasma-print-manager*' \
         --exclude='system-config-printer' \
         --exclude='kmag' \
         --exclude='kmousetool' \
