@@ -80,14 +80,18 @@ ENV PIPX_HOME=/opt/pipx \
 RUN pipx install platformio \
  && pipx install esptool
 
-# picotool — no apt package on noble for v2+, build from master. Uses
-# libusb-1.0-0-dev installed above.
-RUN git clone --depth 1 https://github.com/raspberrypi/picotool.git /tmp/picotool \
+# picotool — no apt package on noble for v2+, build from source. The
+# CMake hard-requires PICO_SDK_PATH (it pulls a few headers from the
+# Pico SDK), so we clone the SDK alongside, build picotool, then drop
+# both source trees. The compiled `picotool` binary has no runtime
+# dep on the SDK.
+RUN git clone --depth 1 https://github.com/raspberrypi/pico-sdk.git /tmp/pico-sdk \
+ && git clone --depth 1 https://github.com/raspberrypi/picotool.git /tmp/picotool \
  && cd /tmp/picotool && mkdir build && cd build \
- && cmake .. -DPICOTOOL_FLAT_INSTALL=1 \
+ && cmake .. -DPICO_SDK_PATH=/tmp/pico-sdk -DPICOTOOL_FLAT_INSTALL=1 \
  && make -j"$(nproc)" \
  && make install DESTDIR=/usr/local \
- && rm -rf /tmp/picotool
+ && rm -rf /tmp/picotool /tmp/pico-sdk
 
 # --- 5. micro-ROS agent (built from source for Jazzy) -------------------
 # /opt/micro-ros-agent/install/setup.bash sourced by /etc/bash.bashrc.
