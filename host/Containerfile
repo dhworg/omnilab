@@ -1,26 +1,53 @@
-# Phase A Step 1 minimal bootc host image, per project-spec-v1.md
-# "First steps" → Phase A.1: Fedora bootc + XFCE + Podman + hello-omnilab.
-# No omnilab CLI, no project images, no skill-packs at this stage — those
-# layers arrive in Phase B.
+# Phase B sub-step 1 host bootc image: Fedora bootc + KDE Plasma 6
+# (Wayland) + Podman + hello-omnilab. Spec amendment 2026-05-09 swapped
+# the desktop from XFCE to KDE Plasma 6 (commit "docs: switch desktop
+# choice from XFCE to KDE Plasma 6"). The omnilab CLI, udev rules, and
+# branding still arrive in Phase B.5.
 FROM quay.io/fedora/fedora-bootc:42
 
-# Spec stack table: Desktop = XFCE on Wayland; Container runtime = Podman.
-# Phase B.5 expands this with nvidia-container-toolkit, udev rules,
-# group setup, branding, and the omnilab CLI baked in.
-#
-# TODO Phase B.5 — switch XFCE to a Wayland session by default
-# (spec § Architecture → Layer 1: "Display server (Wayland), XFCE desktop").
+# Aggressive trim to land the ISO ≤ 6 GB (cap is 8 GB):
+#  - install_weak_deps=False drops Recommends/Suggests dnf would otherwise pull
+#  - PIM/Akonadi stack — mail, calendar, address book; irrelevant for a
+#    robotics dev OS, biggest single trim
+#  - printer drivers + GUIs — no print workflow on a sim laptop
+#  - accessibility apps we won't theme (kmag/kmousetool/kmouth/orca)
+#  - sample wallpapers (replaced with OmniLab branding in Phase B.5)
 #
 # `--exclude=rootfiles`: rootfiles ships /root/.bash_logout etc. and its
 # cpio extraction fails with "mkdir /root/: File exists" against the
-# fedora-bootc base, which already provides /root/. We don't need its
-# stub dotfiles. (Phase B will manage /root and /etc/skel via overlay/.)
+# fedora-bootc base. (Phase B.5 will manage /root and /etc/skel via overlay/.)
 RUN dnf -y install \
+        --setopt=install_weak_deps=False \
         --exclude=rootfiles \
-        @xfce-desktop-environment \
+        --exclude='akonadi*' \
+        --exclude='kdepim*' \
+        --exclude='kmail*' \
+        --exclude='korganizer*' \
+        --exclude='kontact*' \
+        --exclude='kaddressbook*' \
+        --exclude='knotes*' \
+        --exclude='kalarm*' \
+        --exclude='ktnef*' \
+        --exclude='akregator*' \
+        --exclude='cups' \
+        --exclude='cups-filters' \
+        --exclude='print-manager' \
+        --exclude='system-config-printer' \
+        --exclude='kmag' \
+        --exclude='kmousetool' \
+        --exclude='kmouth' \
+        --exclude='orca' \
+        --exclude='plasma-workspace-wallpapers' \
+        @kde-desktop-environment \
         podman \
     && dnf clean all \
     && rm -rf /var/cache/dnf /var/log/dnf*
+
+# Boot to graphical (the Fedora bootc base defaults to multi-user.target)
+# and force SDDM to use the Plasma Wayland session at login.
+RUN ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target \
+ && mkdir -p /etc/sddm.conf.d \
+ && printf '[General]\nDisplayServer=wayland\n' > /etc/sddm.conf.d/00-omnilab-wayland.conf
 
 # Proof-of-life banner. Replaced in Phase B.5 when the omnilab CLI lands.
 COPY hello-omnilab /usr/bin/hello-omnilab
