@@ -1,4 +1,11 @@
-"""Typer app: `omnilab new | up | down | sim | doctor`."""
+"""Typer app: `omnilab new | up | down | sim | doctor` (+ `version`).
+
+Honors project-spec-v1.md (rev 3) § "CLI conventions":
+- Dual-mode output via `--json` root flag (see `_output.py`).
+- Destructive commands accept `--dry-run` + `--yes` (see `_safety.py`).
+- Documented exit codes:
+    0 success, 1 generic, 2 invalid args, 3 state, 4 network, 5 permission.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +16,7 @@ from pathlib import Path
 import typer
 import yaml
 
-from . import __version__
+from . import __version__, _output, _safety
 from .gpu import detect_gpu, resolve_gpu_mode
 from .manifest import OmnilabManifest
 from .podman import (
@@ -29,25 +36,43 @@ app = typer.Typer(
 )
 
 
+@app.callback()
+def root(
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON instead of human text/TUI.",
+        is_eager=True,
+    ),
+) -> None:
+    """Sets the global output mode before any subcommand runs."""
+    _output.set_json_mode(json_output)
+
+
 def _load_manifest(project_dir: Path) -> OmnilabManifest:
+    """Load + validate omnilab.yaml. Exits with code 3 on missing/invalid."""
     manifest_path = project_dir / "omnilab.yaml"
     if not manifest_path.exists():
-        typer.echo(
-            f"ERROR: no omnilab.yaml in {project_dir}. Run `omnilab new <name>` first.",
-            err=True,
+        _output.emit_error(
+            f"no omnilab.yaml in {project_dir}. Run `omnilab new <name>` first.",
+            code=3,
+            project_dir=str(project_dir),
         )
-        raise typer.Exit(1)
     try:
         return OmnilabManifest.from_yaml(manifest_path)
     except Exception as e:  # noqa: BLE001
-        typer.echo(f"ERROR: invalid {manifest_path}: {e}", err=True)
-        raise typer.Exit(1) from e
+        _output.emit_error(
+            f"invalid {manifest_path}: {e}",
+            code=3,
+            manifest_path=str(manifest_path),
+        )
+        raise  # unreachable; emit_error raises Exit
 
 
 @app.command()
 def version() -> None:
     """Print omnilab CLI version."""
-    typer.echo(f"omnilab {__version__}")
+    _output.emit(human=f"omnilab {__version__}", data={"version": __version__})
 
 
 @app.command()
@@ -69,178 +94,223 @@ def new(
     """Scaffold a new OmniLab project directory."""
     target = directory if directory is not None else Path.cwd() / name
     if target.exists():
-        typer.echo(f"ERROR: {target} already exists.", err=True)
-        raise typer.Exit(1)
+        _output.emit_error(
+            f"{target} already exists.",
+            code=2,
+            target=str(target),
+        )
 
-    # Load template from package data.
     try:
         template_text = (
             resources.files("omnilab.templates").joinpath(f"{template}.yaml").read_text()
         )
-    except FileNotFoundError as e:
-        typer.echo(f"ERROR: unknown template '{template}'", err=True)
-        raise typer.Exit(1) from e
+    except FileNotFoundError:
+        _output.emit_error(f"unknown template '{template}'", code=2, template=template)
 
     rendered = template_text.replace("{name}", name)
 
-    # Validate the rendered manifest before writing — catches bad names early.
     OmnilabManifest.model_validate(yaml.safe_load(rendered))
 
     target.mkdir(parents=True)
-    (target / "omnilab.yaml").write_text(rendered)
-    typer.echo(f"Created project at {target}")
-    typer.echo("Next steps:")
-    typer.echo(f"  cd {target}")
-    typer.echo("  omnilab up")
-    typer.echo("  omnilab sim")
+    manifest_path = target / "omnilab.yaml"
+    manifest_path.write_text(rendered)
+
+    _output.emit(
+        human=(
+            f"Created project at {target}\n"
+            "Next steps:\n"
+            f"  cd {target}\n"
+            "  omnilab up\n"
+            "  omnilab sim"
+        ),
+        data={
+            "project": name,
+            "path": str(target),
+            "manifest_path": str(manifest_path),
+            "template": template,
+        },
+    )
 
 
 @app.command()
 def up(
-    project_dir: Path = typer.Option(  # noqa: B008
+    project_dir: Path = typer.Option(
         Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
     ),
 ) -> None:
     """Start the project container with podman."""
     if not has_podman():
-        typer.echo("ERROR: podman not installed or not on PATH.", err=True)
-        raise typer.Exit(2)
+        _output.emit_error("podman not installed or not on PATH.", code=5)
 
     manifest = _load_manifest(project_dir)
 
     if container_running(manifest.name):
-        typer.echo(f"Container '{manifest.name}' is already running.")
+        _output.emit(
+            human=f"Container '{manifest.name}' is already running.",
+            data={"container": manifest.name, "status": "already_running"},
+        )
         return
 
     ctx = detect_host_context(project_dir)
-    # Override gpu kind from manifest (manifest 'auto' → host detect).
     ctx = replace(ctx, gpu=resolve_gpu_mode(manifest.gpu))
 
     args = build_run_args(manifest, ctx, detach=True)
-    typer.echo(f"Starting {manifest.name} (gpu={ctx.gpu})…")
+    _output.emit(human=f"Starting {manifest.name} (gpu={ctx.gpu})…")
     result = run(args)
     if result.returncode != 0:
-        typer.echo(f"ERROR: podman run failed:\n{result.stderr}", err=True)
-        raise typer.Exit(result.returncode)
-    typer.echo(f"Container '{manifest.name}' is up.")
+        _output.emit_error(
+            f"podman run failed:\n{result.stderr}",
+            code=1,
+            container=manifest.name,
+            stderr=result.stderr,
+        )
+    _output.emit(
+        human=f"Container '{manifest.name}' is up.",
+        data={"container": manifest.name, "status": "started", "gpu": ctx.gpu},
+    )
 
 
 @app.command()
 def down(
-    project_dir: Path = typer.Option(  # noqa: B008
+    project_dir: Path = typer.Option(
         Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
     ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview the action; do not stop the container."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt."
+    ),
 ) -> None:
-    """Stop the project container."""
+    """Stop the project container (destructive — confirms by default)."""
     if not has_podman():
-        typer.echo("ERROR: podman not installed or not on PATH.", err=True)
-        raise typer.Exit(2)
+        _output.emit_error("podman not installed or not on PATH.", code=5)
+
     manifest = _load_manifest(project_dir)
+
     if not container_running(manifest.name):
-        typer.echo(f"Container '{manifest.name}' is not running.")
+        _output.emit(
+            human=f"Container '{manifest.name}' is not running.",
+            data={"container": manifest.name, "status": "not_running"},
+        )
         return
+
+    _safety.confirm_or_exit(
+        summary=f"Stop container '{manifest.name}'?",
+        items=[f"podman stop {manifest.name}"],
+        yes=yes,
+        dry_run=dry_run,
+        json_payload={"container": manifest.name, "action": "stop"},
+    )
+
     result = stop_container(manifest.name)
     if result.returncode != 0:
-        typer.echo(f"ERROR: stop failed:\n{result.stderr}", err=True)
-        raise typer.Exit(result.returncode)
-    typer.echo(f"Container '{manifest.name}' stopped.")
+        _output.emit_error(
+            f"stop failed:\n{result.stderr}",
+            code=1,
+            container=manifest.name,
+            stderr=result.stderr,
+        )
+    _output.emit(
+        human=f"Container '{manifest.name}' stopped.",
+        data={"container": manifest.name, "status": "stopped"},
+    )
 
 
 @app.command()
 def sim(
     headless: bool = typer.Option(False, "--headless", help="Run sim without GUI."),
-    project_dir: Path = typer.Option(  # noqa: B008
+    project_dir: Path = typer.Option(
         Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
     ),
 ) -> None:
     """Launch the demo TurtleBot3 + nav2 simulation in the running container."""
     manifest = _load_manifest(project_dir)
     if not container_running(manifest.name):
-        typer.echo(
+        _output.emit_error(
             f"Container '{manifest.name}' is not running. Run `omnilab up` first.",
-            err=True,
+            code=3,
+            container=manifest.name,
         )
-        raise typer.Exit(1)
 
-    # Use the demo nav2 + TurtleBot3 launch the project image already has
-    # via ros-jazzy-nav2-bringup + ros-jazzy-turtlebot3*.
+    launch = (
+        "source /opt/ros/jazzy/setup.bash && "
+        "TURTLEBOT3_MODEL=burger ros2 launch nav2_bringup tb3_simulation_launch.py"
+    )
     if headless:
-        cmd = [
-            "bash",
-            "-lc",
-            (
-                "source /opt/ros/jazzy/setup.bash && "
-                "TURTLEBOT3_MODEL=burger ros2 launch nav2_bringup tb3_simulation_launch.py "
-                "headless:=True"
-            ),
-        ]
-    else:
-        cmd = [
-            "bash",
-            "-lc",
-            (
-                "source /opt/ros/jazzy/setup.bash && "
-                "TURTLEBOT3_MODEL=burger ros2 launch nav2_bringup tb3_simulation_launch.py"
-            ),
-        ]
+        launch += " headless:=True"
+    cmd = ["bash", "-lc", launch]
     rc = exec_in(manifest.name, cmd)
     raise typer.Exit(rc)
 
 
 @app.command()
 def doctor(
-    project_dir: Path = typer.Option(  # noqa: B008
+    project_dir: Path = typer.Option(
         Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
     ),
 ) -> None:
     """Health check: podman, GPU, image pullable, manifest valid."""
-    pass_count = 0
-    fail_count = 0
+    checks: list[dict[str, object]] = []
 
-    def check(label: str, ok: bool, detail: str = "") -> None:
-        nonlocal pass_count, fail_count
-        marker = typer.style("✓", fg=typer.colors.GREEN) if ok else typer.style(
-            "✗", fg=typer.colors.RED
-        )
-        line = f"  {marker} {label}"
-        if detail:
-            line += f"  ({detail})"
-        typer.echo(line)
-        if ok:
-            pass_count += 1
-        else:
-            fail_count += 1
+    def add(name: str, ok: bool, detail: str = "") -> None:
+        checks.append({"name": name, "ok": ok, "detail": detail})
 
-    typer.echo("=== environment ===")
-    check("podman on PATH", has_podman(), detail="from $PATH")
+    # --- environment ---
+    add("podman on PATH", has_podman(), "from $PATH")
     gpu = detect_gpu()
-    check(f"GPU detected: {gpu}", gpu != "none")
+    add(f"GPU detected: {gpu}", gpu != "none")
 
-    typer.echo("\n=== manifest ===")
+    # --- manifest ---
     manifest_path = project_dir / "omnilab.yaml"
     if not manifest_path.exists():
-        check(
-            "omnilab.yaml present",
-            ok=False,
-            detail=f"none at {manifest_path} — try `omnilab new`",
-        )
+        add("omnilab.yaml present", False, f"none at {manifest_path} — try `omnilab new`")
+        manifest = None
     else:
         try:
-            m = OmnilabManifest.from_yaml(manifest_path)
-            check(f"omnilab.yaml parses (project={m.name})", ok=True)
-
-            typer.echo("\n=== image ===")
-            if has_podman():
-                # `podman manifest inspect` fetches metadata without pulling
-                # layers — quick check that the image ref resolves.
-                rc = run(["podman", "manifest", "inspect", m.image])
-                ok = rc.returncode == 0
-                detail = "manifest fetched" if ok else (rc.stderr.strip().splitlines() or [""])[0]
-                check(f"image '{m.image}' pullable", ok=ok, detail=detail)
-            else:
-                check("image reachability", ok=False, detail="skipped (no podman)")
+            manifest = OmnilabManifest.from_yaml(manifest_path)
+            add(f"omnilab.yaml parses (project={manifest.name})", True)
         except Exception as e:  # noqa: BLE001
-            check("omnilab.yaml parses", ok=False, detail=str(e))
+            manifest = None
+            add("omnilab.yaml parses", False, str(e))
 
-    typer.echo(f"\nResult: {pass_count} passed, {fail_count} failed.")
-    raise typer.Exit(fail_count)
+    # --- image ---
+    if manifest is not None:
+        if has_podman():
+            rc = run(["podman", "manifest", "inspect", manifest.image])
+            ok = rc.returncode == 0
+            detail = "manifest fetched" if ok else (rc.stderr.strip().splitlines() or [""])[0]
+            add(f"image '{manifest.image}' pullable", ok, detail)
+        else:
+            add("image reachability", False, "skipped (no podman)")
+
+    passed = sum(1 for c in checks if c["ok"])
+    failed = sum(1 for c in checks if not c["ok"])
+
+    if _output.is_json_mode():
+        _output.emit(
+            data={"passed": passed, "failed": failed, "checks": checks},
+        )
+    else:
+        # Human-style sectioned output.
+        typer.echo("=== environment ===")
+        for c in checks[:2]:
+            _print_check(c)
+        typer.echo("\n=== manifest ===")
+        for c in checks[2:3]:
+            _print_check(c)
+        if len(checks) > 3:
+            typer.echo("\n=== image ===")
+            for c in checks[3:]:
+                _print_check(c)
+        typer.echo(f"\nResult: {passed} passed, {failed} failed.")
+
+    raise typer.Exit(failed)
+
+
+def _print_check(c: dict[str, object]) -> None:
+    marker = _output.style_pass() if c["ok"] else _output.style_fail()
+    line = f"  {marker} {c['name']}"
+    if c.get("detail"):
+        line += f"  ({c['detail']})"
+    typer.echo(line)
