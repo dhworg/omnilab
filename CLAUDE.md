@@ -1,52 +1,113 @@
 # OmniLab — Claude Code session bootstrap
 
 Read this first. Then [`project-spec-v1.md`](./project-spec-v1.md) for the
-full architecture and scope.
+full architecture and scope (architecture rev 3 as of 2026-05-10).
 
 ## Project summary
 
 OmniLab is a bootc-based immutable Linux OS + CLI giving ROS 2 + Gazebo
 developers a zero-setup, dependency-hell-proof environment for sim and
-hardware work. Beachhead: e-Yantra teams (~6000 participants/year).
-v1 deliverable: bootable ISO that turns a fresh laptop into a working sim
-+ hardware dev environment in 15 minutes, no terminal copy-paste.
+hardware work. It's also the first Linux OS where AI agents can perceive,
+act on, and verify robot state via a built-in agent-perception primitive
+(`omnilab observe`). Beachhead: e-Yantra teams (~6000 participants/year).
+v1 deliverable: bootable interactive ISO that turns a fresh laptop into a
+working sim + hardware dev environment in 15 minutes.
 
 ## Current phase
 
-**Phase A Step 1 — DONE.** Repo scaffold + working CI
-(`.github/workflows/build-host-iso.yml`) that produces a minimal host
-ISO. The host image at this point is Fedora bootc + XFCE + Podman +
-a `hello-omnilab` script. No CLI, no project images, no skill-packs.
+**Phase A — Bootstrap: DONE.** Repo scaffold + `build-host-iso.yml` CI;
+first ISO built and bootc loop verified end-to-end.
 
-> Desktop choice: the spec was amended to **KDE Plasma 6** after Phase
-> A.1 shipped (commit "docs: switch desktop choice from XFCE to KDE
-> Plasma 6"). The Phase A.1 ISO still has XFCE because it predates the
-> amendment; Phase B.5 host rebuild will replace it with KDE.
+**Phase B — Core layers (B.4 in progress):**
+- ✅ **B.1**: Host swapped to KDE Plasma 6 on Wayland
+- ✅ **B.2**: `ros-jazzy-gz-harmonic` project image built, on GHCR
+- ✅ **B.3**: `omnilab` CLI v0 (5 commands: `new`, `up`, `down`, `sim`,
+  `doctor`) with 40 unit tests, two-Python-version CI matrix
+- ⏳ **B.4 IN PROGRESS** — spec architecture rev 3:
+  - Switch ISO to interactive install (no baked credentials in default
+    builds; `host/config.toml` becomes opt-in `host/config.toml.dev`)
+  - CLI conventions infrastructure (`--json`, `--dry-run`, `--yes`,
+    documented exit codes)
+  - Seven new commands: `inspect`, `clean`, `record`/`replay`, `pair`,
+    `template`, `observe`, `tune`
+  - Three foundational templates: `nav2-base`, `micro-ros-blink`,
+    `quadruped-walker`
+  - Integration + new "agent loop" smoke test
+- ⏸ **B.5**: Host hardening — udev rules, group memberships, NVIDIA
+  stack, branding (fastfetch, fonts, wallpapers, KDE theming)
+- ⏸ **B.6**: Full smoke-test matrix in CI
 
-**Next: Phase A Step 2** (test machine bootstrap — human-driven).
-Download ISO from Actions, flash to USB, install on the dGPU machine, set
-up Tailscale + tmux + SSH from Mac, validate the live `bootc switch`
-loop. After that, Phase B is parallelizable.
+**Phase C — Verification (gates v1 release):** NVIDIA tier, hardware
+verification, agent-loop verification.
 
-See `project-spec-v1.md` "First steps" for the full phase plan
-(Phase A → B → C → D).
+**Phase D — Polish:** `llm-log-analyzer` skill-pack, mkdocs docs site,
+KDE theming for the Figma-inspired aesthetic.
 
-## Architecture in 5 lines
+See `project-spec-v1.md` § "Phase status" for the up-to-date breakdown.
 
-1. **Host (`omnilab-host`)** — Fedora bootc OCI image, atomic updates via
-   `bootc upgrade`. Contains kernel, KDE Plasma 6 on Wayland, Podman +
-   nvidia-container-toolkit, GPU drivers, udev rules, the `omnilab` CLI.
-   No ROS.
+## Architecture (3 layers + 1 pillar)
+
+1. **Host (`omnilab-host`)** — Fedora bootc 42 OCI image, atomic updates
+   via `bootc upgrade`. Contains kernel, KDE Plasma 6 on Wayland, Podman
+   + nvidia-container-toolkit, GPU drivers, udev rules, the `omnilab`
+   CLI. No ROS.
 2. **Project images (`omnilab-projects`)** — OCI images with pinned
-   ROS 2 Jazzy + Gazebo Harmonic + ros-gz + firmware tools. Referenced by
-   SHA256 digest in `omnilab.yaml`. This is the dep-hell cure.
-3. **Skill-packs (`omnilab-skills`)** — optional installable extensions
-   (v1 ships `llm-log-analyzer`).
-4. **CLI (`omnilab`)** — Python; ships in the host image; drives project
-   containers via Podman. During dev runs from `/var/home/parth/omnilab/`
-   (mutable `/var`); baked in only at release.
-5. **Three layers stay separate.** Host is stable. Projects are pinned.
-   Skills are opt-in.
+   ROS 2 Jazzy + Gazebo Harmonic + ros-gz + firmware tools. Referenced
+   by SHA256 digest in `omnilab.yaml`. This is the dep-hell cure.
+3. **Skill-packs (`omnilab-skills`)** — optional installable extensions.
+   v1 ships `llm-log-analyzer`.
+4. **🆕 Agent perception pillar (`omnilab observe`)** — cross-cutting
+   primitive that exposes spatial/physical robot state to AI agents
+   via dev-defined predicates in `observers.yaml`. Companion to
+   `omnilab tune` (action) and `omnilab record` (memory): together they
+   form the agent-driven dev loop. The differentiator versus other
+   robotics OSes.
+5. **CLI (`omnilab`)** — Python (Typer + Rich/Textual). Lives in the
+   host image; drives project containers via Podman. During dev runs
+   from `/var/home/<user>/omnilab/cli/omnilab/` (mutable `/var`); baked
+   in only at release time.
+
+## CLI conventions (architecture rev 3)
+
+The CLI is the agent API. Every command honors:
+
+- **Dual-mode output** — read-only commands accept `--json` for agents
+  and emit human-readable text/TUI by default. Same data, different
+  shape.
+- **Destructive safety** — destructive commands (`clean`, `down`,
+  `record --stop`, etc.) accept `--dry-run` (preview only) and
+  `--yes` (skip confirmation prompt). Default behavior previews and
+  asks.
+- **Documented exit codes:** `0` success · `1` generic error · `2`
+  invalid args · `3` state error (e.g. container not running) ·
+  `4` network/auth error · `5` permission error.
+- **Predictable structure** — same flag means the same thing across
+  commands.
+
+### v1 CLI surface (full — see spec § CLI for grouping)
+
+| Group | Commands |
+|---|---|
+| Project lifecycle | `new`, `template list/show/install`, `up`, `down`, `freeze`, `clean` |
+| Sim & introspection | `sim`, `inspect`, `observe`, `perf-check` |
+| Hardware | `hw scan`, `hw flash`, `micro-ros` |
+| Recording | `record` (incl. `--start --background` / `--stop <id>`), `replay` |
+| Networking | `pair init`, `pair join`, `pair status` |
+| Tuning | `tune` (`--set`, `--save`, light TUI) |
+| System | `doctor`, `skill install/list` |
+
+### Parked items (deliberately out of v1 scope)
+
+- **`omnilab compete`** — same machinery as `template`; ship when
+  competition orgs (e-Yantra etc.) actually adopt OmniLab. No code
+  carried until adoption.
+- **`omnilab observe --diff` / `--record` (Layer 3)** — baseline
+  comparison; agents in v1 poll `observe --json` and reason over the
+  timeseries themselves.
+- **Multi-node tuning sessions in `omnilab tune`** — single-node only
+  in v1.
+- **`--shape` flag in `observe`** — public release uses dev-defined
+  predicates (Option B); shape templates wait for org collaboration.
 
 ## Identity
 
@@ -69,32 +130,36 @@ See `project-spec-v1.md` "First steps" for the full phase plan
 | Desktop | KDE Plasma 6 on Wayland |
 | Container runtime | Podman + nvidia-container-toolkit |
 | GPU tiers | iGPU (Intel/AMD) baseline; NVIDIA proprietary tier |
-| CLI language | Python |
+| CLI language | Python (Typer + Rich/Textual for TUIs) |
+| Bag format | MCAP default; sqlite3 fallback |
+| DDS | Cyclone DDS (default), Fast DDS supported |
 | Docs | mkdocs-material |
 
-Switch to Ubuntu bootc only when bootc on Ubuntu is GA. Until then,
-ROS lives in the **project container** (Ubuntu 24.04), so the host base
-choice is decoupled.
+Switch to Ubuntu bootc only when bootc on Ubuntu is GA.
 
 ## Conventions
 
 - **Conventional Commits.** Use `feat:`, `fix:`, `chore:`, `ci:`, `docs:`,
-  `refactor:`. One change per commit.
-- **`main` is the default branch.** Land via squash-merge on PRs (when
-  collaborators arrive); direct commits to `main` are fine for solo work.
-- **Image refs in `omnilab.yaml` MUST be SHA256 digests, not tags.** That
-  pinning is the whole reproducibility story. Tags only in CI for the
-  `:latest` and `:sha-<commit>` mirrors.
-- **Anything that needs the test machine — leave a `TODO Phase X.Y` with
-  a phase-and-step pointer.** Do not stub fake values to make CI green.
-- **The `omnilab` CLI runs from `/var/home/parth/omnilab/cli/omnilab/`
-  during dev** (mutable `/var`). Install editable on the test machine
-  with `pip install --user -e .[dev]`; edits on Mac → rsync → effective
-  on next invocation, no host image rebuild. Baked into the host image
-  only at release time (Phase B.5+).
+  `refactor:`, `test:`. One change per commit.
+- **`main` is the default branch.** Squash-merge PRs.
+- **Image refs in `omnilab.yaml` MUST be SHA256 digests, not tags.**
+  Pinning is the whole reproducibility story. Tags only in CI mirrors.
+- **No baked credentials in default ISOs.** Default ISO is **interactive**;
+  user creates their account during Anaconda. The opt-in `dev` variant
+  uses `host/config.toml.dev` for VM auto-install — only triggered
+  explicitly via `workflow_dispatch` with `variant: dev`.
+- **The `omnilab` CLI runs from `/var/home/<user>/omnilab/cli/omnilab/`
+  during dev** (mutable `/var`, fast iteration). Install editable on the
+  test machine with `pip install --user -e .[dev]`; edits on Mac → rsync
+  → effective on next invocation, no host image rebuild. Baked into the
+  host image only at release (Phase B.5+).
+- **Test machine = physical, not VM.** x86_64 emulation under UTM on
+  Apple Silicon is ~10× wall-clock slower; physical also has the dGPU
+  + USB ports needed for NVIDIA + hardware verification. VM remains
+  useful for one-off compatibility checks.
 - **Defaults that don't suck** (per spec §"v1 must-do" #6): GUI on by
-  default, shadows off, single sun, 320x240 @ 15Hz cameras, RMW pinned to
-  Cyclone DDS, non-zero `ROS_DOMAIN_ID`, sim caps at 1.0 RTF.
+  default, shadows off, single sun, 320x240 @ 15Hz cameras, RMW pinned
+  to Cyclone DDS, non-zero `ROS_DOMAIN_ID`, sim caps at 1.0 RTF.
 
 ## Stop-and-ask rules
 
@@ -106,12 +171,14 @@ Pause and ask the user when:
 - The first CI run fails for non-obvious reasons (read logs, try **one**
   fix, then ask).
 - Choosing between options where the wrong choice creates rework.
+- ISO build risks pushing past 8 GB or violating any hard constraint.
 
 Do **not** ask about:
 
 - Style choices the spec or these conventions already cover.
 - Implementation details inside a single component.
-- Which tool to use when the spec already named one.
+- Which tool to use when the spec already named one (Python, Typer,
+  Textual, MCAP, Cyclone DDS, etc.).
 
 ## Pointer
 
