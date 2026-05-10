@@ -1,0 +1,24 @@
+# Example observers.yaml for a quadruped robot.
+# Used by the `quadruped-walker` template; see also `omnilab observe`.
+
+motion_classes:
+  - name: walking_forward
+    when: "linear_velocity.x > 0.05 AND num_feet_in_contact >= 2"
+
+  - name: standing
+    when: "abs(linear_velocity.x) < 0.02 AND abs(linear_velocity.y) < 0.02 AND num_feet_in_contact == 4"
+
+  - name: falling
+    when: "abs(orientation.roll) > 45 OR abs(orientation.pitch) > 45"
+    duration_min: 100ms
+
+anomalies:
+  - name: foot_slip
+    when: "foot.in_contact AND foot.lateral_velocity > 0.1"
+    duration_min: 50ms
+    cooldown: 500ms
+
+  - name: stuck
+    when: "abs(linear_velocity.x) < 0.01 AND num_feet_in_contact >= 2"
+    duration_min: 2000ms
+    cooldown: 5000ms

@@ -1,0 +1,24 @@
+# Example observers.yaml for a 6-DOF manipulator arm.
+
+motion_classes:
+  - name: holding
+    when: "abs(joint_velocity.j0) < 0.01 AND abs(joint_velocity.j5) < 0.01"
+    duration_min: 200ms
+
+  - name: moving_to_target
+    when: "abs(joint_velocity.j0) > 0.05 OR abs(joint_velocity.j5) > 0.05"
+
+  - name: gripping
+    when: "gripper.force > 1.0 AND gripper.opening < 0.05"
+    duration_min: 100ms
+
+anomalies:
+  - name: joint_limit_hit
+    when: "joint_position.j0 > 2.95 OR joint_position.j0 < -2.95"
+    duration_min: 50ms
+    cooldown: 1000ms
+
+  - name: torque_overload
+    when: "abs(joint_torque.j1) > 50 OR abs(joint_torque.j2) > 50"
+    duration_min: 100ms
+    cooldown: 2000ms
