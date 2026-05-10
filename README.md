@@ -28,11 +28,24 @@ The host stays small and stable; projects live in pinned OCI containers
 
 Two ISO variants are produced by CI; you almost certainly want the first.
 
+> ⚠️ **HEAVY WARNING — read before flashing:**
+>
+> OmniLab is a **whole-disk, single-OS distribution**. The installer
+> targets one disk and rewrites its partition table. Existing data on
+> that disk **is not preserved** — there is no "install alongside
+> Windows" or resize-existing-partition flow that you might know from
+> Ubuntu / Fedora Workstation.
+>
+> Use a **dedicated, empty disk** or a **dedicated test machine** that
+> you don't mind erasing. Do **not** install on a drive that holds
+> other operating systems or files you want to keep.
+
 ### Interactive (default — production / physical machine)
 
-Anaconda runs its full UI. **You create your own user, password, and disk
-choice during install.** No credentials are baked into the image. This is
-the variant emitted by every push to `main`, every tag, and every PR.
+Anaconda runs its full UI with `unattended=false`. **You create your own
+user, password, and disk choice during install.** No credentials are
+baked into the image. This is the variant emitted by every push to
+`main`, every tag, and every PR.
 
 1. Open the latest run of the **build-host-iso** workflow on
    [Actions](https://github.com/dhworg/omnilab/actions/workflows/build-host-iso.yml).

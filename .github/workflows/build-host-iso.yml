@@ -139,11 +139,18 @@ jobs:
             --volume /var/lib/containers/storage:/var/lib/containers/storage
           )
 
-          # Only mount config.toml for the dev variant. For interactive,
-          # bootc-image-builder runs without one and Anaconda owns the
-          # whole flow at install-time.
+          # Mount the variant-specific config.toml. Both variants pass
+          # one — without it, bootc-image-builder embeds an autoinstall
+          # kickstart that wipes the only disk and skips user creation.
+          #   interactive → host/config.toml      (unattended=false:
+          #                                        Anaconda runs full UI,
+          #                                        user creates account)
+          #   dev         → host/config.toml.dev  (pre-baked creds for
+          #                                        VM auto-install)
           if [ "$VARIANT" = "dev" ]; then
             VOLUMES+=(--volume "$PWD/host/config.toml.dev:/config.toml:ro")
+          else
+            VOLUMES+=(--volume "$PWD/host/config.toml:/config.toml:ro")
           fi
 
           sudo podman run --rm \
