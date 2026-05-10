@@ -100,7 +100,10 @@ def test_new_json_invalid_template_uses_exit_code_2(tmp_path: Path):
 def test_root_help_lists_json_flag():
     code, out = _run(["--help"])
     assert code == 0
-    assert "--json" in out
+    # Rich-rendered help can wrap "--json" in ANSI codes that split the
+    # literal substring across colour escape sequences. Check the help
+    # text instead, which we control verbatim and Rich won't fragment.
+    assert "machine-readable JSON" in out
 
 
 def test_down_dry_run_does_not_call_podman(tmp_path: Path):
