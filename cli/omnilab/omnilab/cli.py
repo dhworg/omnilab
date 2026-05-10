@@ -245,6 +245,98 @@ def sim(
     raise typer.Exit(rc)
 
 
+template_app = typer.Typer(help="Manage starter templates for new projects.")
+app.add_typer(template_app, name="template")
+
+
+def _local_registry():
+    from . import template as tmpl
+
+    root = tmpl.find_repo_templates_dir()
+    if root is None:
+        _output.emit_error(
+            "no templates/ directory found above cwd. Run from inside the OmniLab repo "
+            "or set up an OCI registry source (Phase B.future).",
+            code=3,
+        )
+    return tmpl.LocalRegistry(root)
+
+
+@template_app.command("list")
+def template_list() -> None:
+    """List available templates."""
+    from . import template as tmpl
+
+    registry = _local_registry()
+    names = registry.list_names()
+    items = []
+    for n in names:
+        info_text = (registry.fetch(n) / "template.yaml").read_text()
+        info = tmpl.TemplateInfo.from_yaml(info_text)
+        items.append(asdict(info))
+    _output.emit(
+        human="\n".join(f"{i['name']:<20}  {i['description'].splitlines()[0]}" for i in items)
+        or "(no templates)",
+        data={"templates": items},
+    )
+
+
+@template_app.command("show")
+def template_show(name: str) -> None:
+    """Print a template's metadata + files list."""
+    from . import template as tmpl
+
+    registry = _local_registry()
+    try:
+        path = registry.fetch(name)
+    except tmpl.TemplateNotFound:
+        _output.emit_error(f"template not found: {name}", code=3, name=name)
+    info = tmpl.TemplateInfo.from_yaml((path / "template.yaml").read_text())
+    _output.emit(
+        human=f"{info.name} (v{info.version})\n  {info.description}\nVariables: {info.variables}\nFiles: {info.files}",
+        data=asdict(info),
+    )
+
+
+@template_app.command("install")
+def template_install(
+    name: str = typer.Argument(...),
+    project_name: str | None = typer.Option(
+        None, "--project-name", help="Override project_name variable (default: cwd basename)."
+    ),
+    target: Path | None = typer.Option(
+        None, "--target", help="Where to install (default: cwd)."
+    ),
+) -> None:
+    """Install a template into the current project."""
+    from . import template as tmpl
+
+    registry = _local_registry()
+    try:
+        path = registry.fetch(name)
+    except tmpl.TemplateNotFound:
+        _output.emit_error(f"template not found: {name}", code=3, name=name)
+    info = tmpl.TemplateInfo.from_yaml((path / "template.yaml").read_text())
+    target = target or Path.cwd()
+    proj_name = project_name or target.resolve().name
+    variables = {"project_name": proj_name}
+    try:
+        written = tmpl.install_template(
+            info=info, template_root=path, target=target, variables=variables
+        )
+    except FileExistsError as e:
+        _output.emit_error(str(e), code=2)
+    _output.emit(
+        human=f"Installed {info.name} into {target} ({len(written)} files).",
+        data={
+            "template": info.name,
+            "target": str(target),
+            "project_name": proj_name,
+            "files_written": [str(p) for p in written],
+        },
+    )
+
+
 pair_app = typer.Typer(help="LAN-first peer pairing for ROS DDS.")
 app.add_typer(pair_app, name="pair")
 
