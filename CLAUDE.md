@@ -23,19 +23,25 @@ first ISO built and bootc loop verified end-to-end.
 - ✅ **B.2**: `ros-jazzy-gz-harmonic` project image built, on GHCR
 - ✅ **B.3**: `omnilab` CLI v0 (5 commands: `new`, `up`, `down`, `sim`,
   `doctor`) with 40 unit tests, two-Python-version CI matrix
-- ⏳ **B.4 IN PROGRESS** — spec architecture rev 3:
-  - Switch ISO to interactive install (no baked credentials in default
-    builds; `host/config.toml` becomes opt-in `host/config.toml.dev`)
-  - CLI conventions infrastructure (`--json`, `--dry-run`, `--yes`,
-    documented exit codes)
-  - Seven new commands: `inspect`, `clean`, `record`/`replay`, `pair`,
-    `template`, `observe`, `tune`
-  - Three foundational templates: `nav2-base`, `micro-ros-blink`,
-    `quadruped-walker`
-  - Integration + new "agent loop" smoke test
-- ⏸ **B.5**: Host hardening — udev rules, group memberships, NVIDIA
-  stack, branding (fastfetch, fonts, wallpapers, KDE theming)
-- ⏸ **B.6**: Full smoke-test matrix in CI
+- ✅ **B.4 DONE** — spec architecture rev 3:
+  - ✅ Switched ISO to interactive install (default; opt-in `dev` variant
+    via `workflow_dispatch` with `host/config.toml.dev`)
+  - ✅ CLI conventions infra (`--json`, `--dry-run`, `--yes`, documented
+    exit codes 0..5; `docs/cli-conventions.md`)
+  - ✅ Seven new commands shipped: `inspect`, `clean`, `record`/`replay`,
+    `pair init/join/status`, `template list/show/install`, `observe`,
+    `tune`. All honor dual-mode + destructive-safety conventions.
+  - ✅ Three foundational templates: `nav2-base`, `micro-ros-blink`,
+    `quadruped-walker` (with observers.yaml). 3 `docs/examples/observers/`
+    YAMLs (quadruped, mobile_2d, arm_6dof).
+  - ✅ Agent-loop smoke test (`tests/test_agent_loop.py`) wired into
+    `smoke-tests.yml` workflow.
+  - ✅ `omnilab doctor --full` for extended health checks.
+  - 234 → 240+ unit tests, two Python versions in CI.
+- ⏳ **B.5 NEXT**: Host hardening — udev rules, group memberships,
+  NVIDIA stack, branding (fastfetch, fonts, wallpapers, KDE theming)
+- ⏸ **B.6**: Full smoke-test matrix in CI (Gazebo headless on
+  self-hosted dGPU runner)
 
 **Phase C — Verification (gates v1 release):** NVIDIA tier, hardware
 verification, agent-loop verification.

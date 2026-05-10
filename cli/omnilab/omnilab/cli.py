@@ -898,12 +898,17 @@ def inspect(
 
 
 @app.command()
-def doctor(
+def doctor(  # noqa: PLR0912, PLR0915
     project_dir: Path = typer.Option(
         Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
     ),
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help="Run extended checks (templates, observers, pair, recordings).",
+    ),
 ) -> None:
-    """Health check: podman, GPU, image pullable, manifest valid."""
+    """Health check: podman, GPU, image pullable, manifest valid (+ extended with --full)."""
     checks: list[dict[str, object]] = []
 
     def add(name: str, ok: bool, detail: str = "") -> None:
@@ -916,15 +921,14 @@ def doctor(
 
     # --- manifest ---
     manifest_path = project_dir / "omnilab.yaml"
+    manifest = None
     if not manifest_path.exists():
         add("omnilab.yaml present", False, f"none at {manifest_path} — try `omnilab new`")
-        manifest = None
     else:
         try:
             manifest = OmnilabManifest.from_yaml(manifest_path)
             add(f"omnilab.yaml parses (project={manifest.name})", True)
         except Exception as e:  # noqa: BLE001
-            manifest = None
             add("omnilab.yaml parses", False, str(e))
 
     # --- image ---
@@ -937,25 +941,84 @@ def doctor(
         else:
             add("image reachability", False, "skipped (no podman)")
 
+    # --- extended checks (--full) -----------------------------------------
+    if full:
+        from . import observe as obsmod
+        from . import pair as pairmod
+        from . import record as recmod
+        from . import template as tmplmod
+
+        # Templates
+        templates_root = tmplmod.find_repo_templates_dir(project_dir)
+        if templates_root is None:
+            add("templates registry", False, "no templates/ dir found above project_dir")
+        else:
+            reg = tmplmod.LocalRegistry(templates_root)
+            names = reg.list_names()
+            add(
+                f"templates available: {len(names)}",
+                len(names) > 0,
+                ", ".join(names[:5]),
+            )
+
+        # Observers
+        if manifest and manifest.observers:
+            obs_path = project_dir / manifest.observers
+            if not obs_path.exists():
+                add(f"observers file {manifest.observers}", False, "missing")
+            else:
+                issues = obsmod.validate_observers(obs_path.read_text())
+                errors = [i for i in issues if i.level == "error"]
+                add(
+                    f"observers.yaml lints clean ({len(issues)} issues)",
+                    len(errors) == 0,
+                    f"{len(errors)} errors" if errors else "ok",
+                )
+        else:
+            add("observers.yaml configured", False, "no `observers:` key in manifest")
+
+        # Pair
+        pair_xml = project_dir / ".omnilab" / "cyclonedds.xml"
+        add("pair config present", pair_xml.exists(), str(pair_xml) if pair_xml.exists() else "run `omnilab pair`")
+
+        # Recordings
+        mgr = recmod.RecordingManager(project_dir)
+        rec_count = len(mgr.list_recordings())
+        add(f"recordings on disk: {rec_count}", True)
+
+        # Firewall backend (informational)
+        backend = pairmod.detect_firewall_backend()
+        add(f"firewall backend: {backend}", True, "informational")
+
     passed = sum(1 for c in checks if c["ok"])
     failed = sum(1 for c in checks if not c["ok"])
 
     if _output.is_json_mode():
         _output.emit(
-            data={"passed": passed, "failed": failed, "checks": checks},
+            data={
+                "passed": passed,
+                "failed": failed,
+                "full": full,
+                "checks": checks,
+            },
         )
     else:
-        # Human-style sectioned output.
         typer.echo("=== environment ===")
         for c in checks[:2]:
             _print_check(c)
         typer.echo("\n=== manifest ===")
         for c in checks[2:3]:
             _print_check(c)
-        if len(checks) > 3:
+        if any("image" in str(c["name"]) for c in checks):
             typer.echo("\n=== image ===")
-            for c in checks[3:]:
-                _print_check(c)
+            for c in checks:
+                if "image" in str(c["name"]):
+                    _print_check(c)
+        if full:
+            typer.echo("\n=== extended ===")
+            for c in checks:
+                if not any(k in str(c["name"]) for k in ("podman", "GPU", "omnilab.yaml", "image")):
+                    _print_check(c)
         typer.echo(f"\nResult: {passed} passed, {failed} failed.")
 
     raise typer.Exit(failed)

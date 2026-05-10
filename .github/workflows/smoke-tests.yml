@@ -1,0 +1,84 @@
+# Phase B.4 step 10 smoke matrix.
+#
+# This workflow currently runs the CI-friendly subset of the seven
+# smoke tests from project-spec-v1.md § "Smoke tests":
+#
+#   #2  CLI: `omnilab doctor` returns all green; --json output is valid
+#   #7  Agent loop: observe → tune → inspect contract round-trip
+#
+# The full suite (boot, sim headless, sim GUI, hardware, NVIDIA tier)
+# runs on the self-hosted dGPU machine and is wired in Phase B.6 + C.
+# This file is the seed; expanded with each phase.
+name: smoke-tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cli/**'
+      - 'docs/examples/**'
+      - 'templates/**'
+      - '.github/workflows/smoke-tests.yml'
+  pull_request:
+    paths:
+      - 'cli/**'
+      - 'docs/examples/**'
+      - 'templates/**'
+      - '.github/workflows/smoke-tests.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  agent-loop:
+    name: Smoke #7 — agent loop (observe → tune → inspect)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        working-directory: cli/omnilab
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,tui]
+
+      - name: Run agent-loop smoke
+        run: pytest cli/omnilab/tests/test_agent_loop.py -v
+
+  cli-doctor:
+    name: Smoke #2 — omnilab doctor (no project)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        working-directory: cli/omnilab
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,tui]
+
+      - name: Doctor JSON output is valid JSON
+        # In a fresh dir with no manifest, doctor returns failures but
+        # MUST emit valid JSON we can parse. Asserts the dual-mode
+        # contract from the spec § "CLI conventions".
+        run: |
+          mkdir -p /tmp/empty-project
+          cd /tmp/empty-project
+          omnilab --json doctor || rc=$?
+          # Exit code is the count of failed checks; doesn't matter for
+          # this test — we only care that the doc parses.
+          omnilab --json doctor 2>/dev/null | python -c "import sys, json; json.load(sys.stdin); print('JSON valid')"
