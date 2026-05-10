@@ -9,6 +9,7 @@ Honors project-spec-v1.md (rev 3) § "CLI conventions":
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, replace
 from importlib import resources
 from pathlib import Path
@@ -242,6 +243,125 @@ def sim(
     cmd = ["bash", "-lc", launch]
     rc = exec_in(manifest.name, cmd)
     raise typer.Exit(rc)
+
+
+pair_app = typer.Typer(help="LAN-first peer pairing for ROS DDS.")
+app.add_typer(pair_app, name="pair")
+
+
+@pair_app.command("init")
+def pair_init(
+    project_dir: Path = typer.Option(
+        Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
+    ),
+) -> None:
+    """Generate a memorable pairing code; print it for the peer to use."""
+    from . import pair as pairmod
+
+    code = pairmod.generate_pairing_code()
+    domain_id = pairmod.derive_domain_id(code)
+    _output.emit(
+        human=(
+            f"Pairing code: {code}\n"
+            f"  derived ROS_DOMAIN_ID: {domain_id}\n"
+            "Share the code with your peer and run `omnilab pair join <code>` on both machines."
+        ),
+        data={"code": code, "domain_id": domain_id},
+    )
+
+
+@pair_app.command("join")
+def pair_join(
+    code: str = typer.Argument(..., help="Pairing code from `omnilab pair init`."),
+    peer_ip: str | None = typer.Option(
+        None, "--peer-ip", help="Peer IP if not auto-discoverable."
+    ),
+    project_dir: Path = typer.Option(
+        Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
+    ),
+) -> None:
+    """Probe network, pick RMW mode, write Cyclone DDS config, persist."""
+    from . import pair as pairmod
+
+    if not pairmod.is_valid_pairing_code(code):
+        _output.emit_error(f"invalid pairing code: {code!r}", code=2)
+
+    domain_id = pairmod.derive_domain_id(code)
+    interface = pairmod.default_interface()
+    local_ip = pairmod.local_ip_for(interface)
+
+    probe = pairmod.NetworkProbe(
+        peer_reachable=(peer_ip is not None and pairmod.probe_peer_reachable(peer_ip)),
+        can_multicast=True,  # v0 assumes; deeper probe is Phase B.future
+        nat_detected=False,
+        interface=interface,
+        local_ip=local_ip,
+        peer_ip=peer_ip,
+    )
+    mode = pairmod.select_pairing_mode(probe)
+
+    if mode is None:
+        _output.emit_error(
+            pairmod.UNREACHABLE_PEER_HINT,
+            code=4,
+            code_attempted=code,
+            peer_ip=peer_ip,
+        )
+
+    xml_dir = project_dir / ".omnilab"
+    xml_dir.mkdir(parents=True, exist_ok=True)
+    xml_path = xml_dir / "cyclonedds.xml"
+    xml_path.write_text(
+        pairmod.cyclonedds_xml(
+            domain_id=domain_id,
+            mode=mode,
+            interface=interface,
+            peer_ip=peer_ip,
+        )
+    )
+
+    backend = pairmod.detect_firewall_backend()
+    fw_cmds = pairmod.firewall_commands(domain_id=domain_id, backend=backend)
+
+    result = pairmod.PairResult(
+        code=code,
+        domain_id=domain_id,
+        mode=mode,
+        interface=interface,
+        local_ip=local_ip,
+        peer_ip=peer_ip,
+        cyclonedds_xml_path=str(xml_path),
+        firewall_backend=backend,
+    )
+    _output.emit(
+        human=(
+            f"Paired. mode={mode}, domain_id={domain_id}, iface={interface}\n"
+            f"  Cyclone DDS config: {xml_path}\n"
+            f"  Firewall backend: {backend} ({len(fw_cmds)} rules to apply)"
+        ),
+        data={**result.to_dict(), "firewall_commands": fw_cmds},
+    )
+
+
+@pair_app.command("status")
+def pair_status(
+    project_dir: Path = typer.Option(
+        Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
+    ),
+) -> None:
+    """Report current pairing state (XML present? domain_id active?)."""
+    xml_path = project_dir / ".omnilab" / "cyclonedds.xml"
+    paired = xml_path.exists()
+    data = {"paired": paired}
+    if paired:
+        text = xml_path.read_text()
+        m = re.search(r"<Domain\s+id='(\d+)'>", text)
+        if m:
+            data["domain_id"] = int(m.group(1))
+    _output.emit(
+        human="paired" if paired else "not paired",
+        data=data,
+    )
 
 
 @app.command()
