@@ -245,6 +245,44 @@ def sim(
 
 
 @app.command()
+def inspect(
+    project_dir: Path = typer.Option(
+        Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
+    ),
+    refresh: float = typer.Option(
+        1.0, "--refresh", min=0.1, max=10.0, help="TUI refresh rate in Hz."
+    ),
+) -> None:
+    """Live unified dashboard — nodes, topics, services, TF, Gazebo.
+
+    Read-only. Default human mode is a Textual TUI that refreshes at
+    `--refresh` Hz; `--json` returns a single structured snapshot.
+    """
+    manifest = _load_manifest(project_dir)
+    if not container_running(manifest.name):
+        _output.emit_error(
+            f"container '{manifest.name}' is not running. Run `omnilab up` first.",
+            code=3,
+            container=manifest.name,
+        )
+
+    from .inspect import build_snapshot
+    from .inspect_sources import PodmanExecSources
+
+    sources = PodmanExecSources(manifest.name)
+
+    if _output.is_json_mode():
+        snapshot = build_snapshot(sources, container=manifest.name)
+        _output.emit(data=snapshot.to_json_dict())
+        return
+
+    from .inspect_tui import run_tui
+
+    rc = run_tui(sources, container=manifest.name, refresh_hz=refresh)
+    raise typer.Exit(rc)
+
+
+@app.command()
 def doctor(
     project_dir: Path = typer.Option(
         Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."

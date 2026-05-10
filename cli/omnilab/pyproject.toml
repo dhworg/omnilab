@@ -24,6 +24,9 @@ dev = [
   "pytest-cov>=5.0",
   "ruff>=0.6",
 ]
+tui = [
+  "textual>=0.78",
+]
 
 [project.scripts]
 omnilab = "omnilab.__main__:main"
@@ -46,8 +49,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["PLR2004", "S101", "B008", "E501"]  # asserts + CliRunner pattern + long literals
-"omnilab/cli.py" = ["B008"]  # typer requires Option/Argument calls in defaults
+"tests/*" = ["PLR2004", "S101", "B008", "E501", "PLC0415"]  # asserts + CliRunner pattern + lazy test imports
+"omnilab/cli.py" = ["B008", "PLC0415"]  # typer needs B008; lazy textual import lives here
+"omnilab/inspect_tui.py" = ["PLC0415"]  # lazy textual import is intentional
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
