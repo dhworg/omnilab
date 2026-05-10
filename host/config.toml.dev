@@ -1,0 +1,16 @@
+# bootc-image-builder customization for the OPT-IN dev ISO variant only.
+# Schema reference: https://osbuild.org/docs/bootc/
+#
+# Per project-spec-v1.md (architecture rev 3) § "Install behavior":
+# Default ISO is INTERACTIVE — Anaconda runs its full UI, user creates
+# their own account during install, NO baked credentials. This file is
+# used ONLY when build-host-iso.yml is dispatched with variant=dev,
+# which is the opt-in fast-iteration build for VM testing.
+#
+# DO NOT use this for production / shareable / physical-machine builds.
+
+[[customizations.user]]
+name = "parth"
+password = "omnilab"
+key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIQUGbeYrs7+A8hfQBLUanssCMaH6k9A7fvUatFS30ct"
+groups = ["wheel"]

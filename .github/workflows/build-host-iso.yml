@@ -1,15 +1,31 @@
-# Phase A Step 1 CI: build the omnilab-host OCI image, push to GHCR on
-# main, bake an installable ISO with bootc-image-builder, and upload that
-# ISO as a workflow artifact.
+# Build the omnilab-host OCI image, push to GHCR on main, bake an
+# installable ISO with bootc-image-builder, and upload that ISO as a
+# workflow artifact.
 #
-# See project-spec-v1.md "First steps" → Phase A.1 and "Development
-# workflow" → "CI matrix". Phase B.6 adds smoke-tests.yml against the
-# qcow2 in a VM.
+# Per project-spec-v1.md (rev 3) § "Install behavior", the ISO supports
+# two variants:
+#
+#   interactive (default)   Anaconda runs its full UI, user creates their
+#                           own account during install. No baked
+#                           credentials. This is the production /
+#                           physical-machine variant. Default for push to
+#                           main, PRs, tags, and unspecified
+#                           workflow_dispatch.
+#
+#   dev                     bootc-image-builder gets host/config.toml.dev
+#                           so the ISO auto-installs with placeholder
+#                           credentials. Fast iteration in a VM only.
+#                           Triggered explicitly via workflow_dispatch
+#                           with variant=dev.
+#
+# Phase B.6 will add smoke-tests.yml that runs the seven smoke tests
+# against the qcow2 in a VM.
 name: build-host-iso
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
     paths:
       - 'host/**'
       - '.github/workflows/build-host-iso.yml'
@@ -18,6 +34,14 @@ on:
       - 'host/**'
       - '.github/workflows/build-host-iso.yml'
   workflow_dispatch:
+    inputs:
+      variant:
+        description: 'ISO variant — interactive (production, no baked credentials) or dev (auto-install for VM iteration).'
+        type: choice
+        options:
+          - interactive
+          - dev
+        default: interactive
 
 env:
   REGISTRY: ghcr.io
@@ -27,21 +51,48 @@ env:
 # Cancel in-flight PR runs when a new commit is pushed to the PR branch.
 # Always let main runs finish so we don't lose published artifacts.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.variant || 'interactive' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
-    name: Build host image and ISO
+    name: Build host image and ${{ inputs.variant || 'interactive' }} ISO
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
     timeout-minutes: 60
 
+    env:
+      # Default to interactive for push, pull_request, and tag events.
+      # workflow_dispatch overrides via inputs.variant.
+      VARIANT: ${{ inputs.variant || 'interactive' }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve variant
+        run: |
+          echo "Building ISO variant: $VARIANT"
+          case "$VARIANT" in
+            interactive)
+              echo "Anaconda will run its full UI. NO baked credentials."
+              ;;
+            dev)
+              echo "WARNING: dev variant — ISO auto-installs with placeholder"
+              echo "credentials from host/config.toml.dev. NOT for shareable"
+              echo "or physical-machine builds."
+              if [ ! -f host/config.toml.dev ]; then
+                echo "ERROR: host/config.toml.dev not found." >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "ERROR: unknown variant '$VARIANT'." >&2
+              exit 1
+              ;;
+          esac
 
       - name: Build host OCI image
         run: |
@@ -73,17 +124,35 @@ jobs:
       - name: Build ISO with bootc-image-builder
         run: |
           mkdir -p output
+
+          # Common bootc-image-builder args.
+          BIB_ARGS=(
+            --type anaconda-iso
+            --rootfs xfs
+            --local
+            localhost/omnilab-host:latest
+          )
+
+          # Common volume mounts.
+          VOLUMES=(
+            --volume "$PWD/output:/output"
+            --volume /var/lib/containers/storage:/var/lib/containers/storage
+          )
+
+          # Only mount config.toml for the dev variant. For interactive,
+          # bootc-image-builder runs without one and Anaconda owns the
+          # whole flow at install-time.
+          if [ "$VARIANT" = "dev" ]; then
+            VOLUMES+=(--volume "$PWD/host/config.toml.dev:/config.toml:ro")
+          fi
+
           sudo podman run --rm \
             --privileged \
             --security-opt label=type:unconfined_t \
-            --volume "$PWD/output:/output" \
-            --volume "$PWD/host/config.toml:/config.toml:ro" \
-            --volume /var/lib/containers/storage:/var/lib/containers/storage \
+            "${VOLUMES[@]}" \
             "$BIB_IMAGE" \
-            --type anaconda-iso \
-            --rootfs xfs \
-            --local \
-            localhost/omnilab-host:latest
+            "${BIB_ARGS[@]}"
+
           sudo chown -R "$(id -u):$(id -g)" output
           echo "--- output tree ---"
           find output -type f -printf '%p  %s bytes\n'
@@ -91,7 +160,7 @@ jobs:
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v4
         with:
-          name: omnilab-host-iso
+          name: omnilab-host-iso-${{ env.VARIANT }}
           path: output/**/*.iso
           retention-days: 14
           if-no-files-found: error
