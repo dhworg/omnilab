@@ -1,0 +1,15 @@
+name: {{project_name}}
+host_min_version: 0.1.0
+image: ghcr.io/dhworg/ros-jazzy-gz-harmonic:latest
+
+ros:
+  rmw: rmw_cyclonedds_cpp
+  domain_id: 42
+
+gpu: auto
+
+hardware:
+  micro_ros: enabled
+  boards: [esp32]
+
+skills: []

@@ -1,0 +1,11 @@
+name: nav2-base
+description: |
+  TurtleBot3 + ros-jazzy-nav2-bringup in the default Gazebo arena.
+  The starting point for any 2D-mobile project. `omnilab sim` works
+  immediately after install.
+version: "1"
+variables:
+  - project_name
+files:
+  - omnilab.yaml
+  - README.md

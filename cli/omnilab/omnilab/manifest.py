@@ -57,6 +57,15 @@ class HardwareConfig(BaseModel):
     boards: list[str] = Field(default_factory=list)
 
 
+class PairConfig(BaseModel):
+    """Set by `omnilab pair init/join` and persisted in omnilab.yaml."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    domain_id: int = Field(..., ge=0, le=232)
+    config: Literal["simple_discovery", "discovery_server"] = "simple_discovery"
+
+
 GpuMode = Literal["auto", "igpu", "nvidia"]
 
 
@@ -72,6 +81,11 @@ class OmnilabManifest(BaseModel):
     gazebo: GazeboConfig = Field(default_factory=GazeboConfig)
     gpu: GpuMode = "auto"
     hardware: HardwareConfig = Field(default_factory=HardwareConfig)
+    # Path to observers.yaml relative to the project dir. Optional —
+    # used by `omnilab observe`. Phase B.4 step 8 onwards.
+    observers: str | None = None
+    # Set by `omnilab pair init/join`; absent when not paired.
+    pair: PairConfig | None = None
     skills: list[str] = Field(default_factory=list)
 
     @field_validator("name")

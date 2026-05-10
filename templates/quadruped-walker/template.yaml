@@ -1,0 +1,13 @@
+name: quadruped-walker
+description: |
+  Quadruped with a gait controller and an observers.yaml that
+  demonstrates the agent-perception story (motion_class detection +
+  foot-slip anomaly). Pair with `omnilab observe` to read live spatial
+  state.
+version: "1"
+variables:
+  - project_name
+files:
+  - omnilab.yaml
+  - observers.yaml
+  - README.md

@@ -1,0 +1,13 @@
+name: micro-ros-blink
+description: |
+  ESP32 firmware skeleton that publishes IMU readings via micro-ROS.
+  Hardware-side starter — boots the micro-ROS agent in the project
+  container, leaves an esp32/ source tree for the firmware itself.
+version: "1"
+variables:
+  - project_name
+files:
+  - omnilab.yaml
+  - README.md
+  - esp32/platformio.ini
+  - esp32/src/main.cpp
