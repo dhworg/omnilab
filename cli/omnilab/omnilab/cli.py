@@ -246,6 +246,103 @@ def sim(
 
 
 @app.command()
+def tune(
+    node: str = typer.Argument(..., help="ROS node to tune (e.g. /turtlebot3_diff_drive)."),
+    sets: list[str] = typer.Option(
+        [],
+        "--set",
+        help="Parameter to set as `name=value`. Repeatable; applied in order.",
+    ),
+    save: bool = typer.Option(
+        False, "--save", help="Persist the changes to params.yaml in the project dir."
+    ),
+    project_dir: Path = typer.Option(
+        Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
+    ),
+) -> None:
+    """Live ROS parameter set + save (agent-action complement to observe)."""
+    from . import tune as tunemod
+
+    if not sets:
+        _output.emit_error(
+            "no --set <name>=<value> provided; nothing to tune.", code=2
+        )
+
+    try:
+        parsed = [tunemod.ParamSet.parse(s) for s in sets]
+    except ValueError as e:
+        _output.emit_error(str(e), code=2)
+
+    manifest = _load_manifest(project_dir)
+    if not container_running(manifest.name):
+        _output.emit_error(
+            f"container '{manifest.name}' is not running. Run `omnilab up` first.",
+            code=3,
+        )
+
+    # Live-set support heuristic — describe the first param.
+    describe = run(
+        [
+            "podman",
+            "exec",
+            manifest.name,
+            "bash",
+            "-lc",
+            f"source /opt/ros/jazzy/setup.bash && ros2 param describe {node} {parsed[0].name}",
+        ]
+    )
+    live = tunemod.parse_describe_output(describe.stdout)
+
+    applied: list[dict] = []
+    failed: list[dict] = []
+    for argv in tunemod.build_set_argv(node, parsed):
+        cmd_str = " ".join(argv)
+        result = run(
+            [
+                "podman",
+                "exec",
+                manifest.name,
+                "bash",
+                "-lc",
+                f"source /opt/ros/jazzy/setup.bash && {cmd_str}",
+            ]
+        )
+        record = {"argv": argv, "rc": result.returncode, "stderr": result.stderr.strip()}
+        (applied if result.returncode == 0 else failed).append(record)
+
+    saved_path: str | None = None
+    if save:
+        params_yaml = project_dir / "params.yaml"
+        existing = params_yaml.read_text() if params_yaml.exists() else None
+        rendered = tunemod.build_save_yaml(
+            node=node, sets=parsed, existing_yaml=existing
+        )
+        params_yaml.write_text(rendered)
+        saved_path = str(params_yaml)
+
+    result = tunemod.TuneResult(
+        node=node, applied=applied, failed=failed, saved_path=saved_path, live_support=live
+    )
+    _output.emit(
+        human=(
+            f"node: {node}\n"
+            f"  live-set support: {live.supported} ({live.confidence}: {live.reason})\n"
+            f"  applied: {len(applied)}, failed: {len(failed)}"
+            + (f"\n  saved to {saved_path}" if saved_path else "")
+        ),
+        data={
+            "node": result.node,
+            "applied": result.applied,
+            "failed": result.failed,
+            "saved_path": result.saved_path,
+            "live_support": asdict(result.live_support) if result.live_support else None,
+        },
+    )
+    if failed:
+        raise typer.Exit(1)
+
+
+@app.command()
 def observe(
     project_dir: Path = typer.Option(
         Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
