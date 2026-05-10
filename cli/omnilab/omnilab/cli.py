@@ -9,7 +9,7 @@ Honors project-spec-v1.md (rev 3) § "CLI conventions":
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from importlib import resources
 from pathlib import Path
 
@@ -242,6 +242,92 @@ def sim(
     cmd = ["bash", "-lc", launch]
     rc = exec_in(manifest.name, cmd)
     raise typer.Exit(rc)
+
+
+@app.command()
+def clean(
+    project_dir: Path = typer.Option(
+        Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
+    ),
+    all_projects: bool = typer.Option(
+        False, "--all", help="NUCLEAR — clean every omnilab-labeled container, not just current project."
+    ),
+    aggressive: bool = typer.Option(
+        False,
+        "--aggressive",
+        help="Walk process trees (children-first) and SIGTERM→SIGKILL them. D-state procs are still only reported.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the plan; take no action."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt."
+    ),
+) -> None:
+    """Safe orphan / leftover-state cleanup. Container-kill primitives, D-state honest."""
+    from . import clean as cleanmod
+
+    project: str | None = None
+    if not all_projects:
+        manifest = _load_manifest(project_dir)
+        project = manifest.name
+
+    procs = cleanmod.read_proc_snapshot()
+    containers = cleanmod.read_container_snapshot()
+    plan = cleanmod.plan_cleanup(
+        project=project,
+        containers=containers,
+        procs=procs,
+        all_projects=all_projects,
+        aggressive=aggressive,
+    )
+
+    summary_lines = []
+    if plan.is_empty():
+        _output.emit(
+            human="Nothing to clean.",
+            data={**plan.to_dict(), "result": "noop"},
+        )
+        return
+
+    summary_lines.append(
+        f"Would act on {len(plan.actions)} target(s)"
+        f" (scope={plan.scope}, aggressive={aggressive})."
+    )
+    if plan.d_state_processes:
+        summary_lines.append(
+            f"⚠ {len(plan.d_state_processes)} D-state (uninterruptible) "
+            "process(es) — these CANNOT be killed; reboot may be required."
+        )
+
+    items = [f"{a.kind}: {a.target} ({a.reason})" for a in plan.actions]
+    if plan.d_state_processes:
+        items.extend(
+            f"D-state pid={p.pid} {p.name} (REBOOT)" for p in plan.d_state_processes
+        )
+
+    _safety.confirm_or_exit(
+        summary="\n".join(summary_lines),
+        items=items,
+        yes=yes,
+        dry_run=dry_run,
+        json_payload=plan.to_dict(),
+    )
+
+    results = cleanmod.execute_plan(plan)
+    failed = sum(1 for _, rc in results if rc != 0)
+    _output.emit(
+        human=f"Cleanup complete. {len(results) - failed} ok, {failed} failed.",
+        data={
+            "result": "executed",
+            "succeeded": len(results) - failed,
+            "failed": failed,
+            "actions": [{**a.to_dict(), "return_code": rc} for a, rc in results],
+            "d_state_processes": [asdict(p) for p in plan.d_state_processes],
+        },
+    )
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.command()
