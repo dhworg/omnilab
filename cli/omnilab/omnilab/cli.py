@@ -245,6 +245,87 @@ def sim(
     raise typer.Exit(rc)
 
 
+@app.command()
+def observe(
+    project_dir: Path = typer.Option(
+        Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
+    ),
+    capture: bool = typer.Option(
+        False, "--capture", help="Layer 2: capture annotated frames during the window."
+    ),
+    duration: float = typer.Option(
+        2.0, "--duration", help="Capture window length in seconds."
+    ),
+    fps: int = typer.Option(10, "--fps", help="Frame rate for --capture."),
+    validate: Path | None = typer.Option(
+        None, "--validate", help="Lint an observers.yaml; do not collect state."
+    ),
+) -> None:
+    """Agent perception primitive — Layer 1 spatial summary, Layer 2 frame capture."""
+    from . import observe as obs
+
+    if validate is not None:
+        text = validate.read_text()
+        issues = obs.validate_observers(text)
+        if issues:
+            for i in issues:
+                _output.emit(human=f"  [{i.level}] {i.target}: {i.message}")
+            errors = sum(1 for i in issues if i.level == "error")
+            _output.emit(
+                human=f"\n{errors} error(s), {len(issues) - errors} warning(s)",
+                data={"issues": [asdict(i) for i in issues], "errors": errors},
+            )
+            raise typer.Exit(1 if errors else 0)
+        _output.emit(human="observers.yaml is clean.", data={"issues": []})
+        return
+
+    manifest = _load_manifest(project_dir)
+    if manifest.observers is None:
+        _output.emit_error(
+            "no observers: key in omnilab.yaml — add `observers: observers.yaml`",
+            code=3,
+        )
+    observers_path = project_dir / manifest.observers
+    if not observers_path.exists():
+        _output.emit_error(f"observers file not found: {observers_path}", code=3)
+
+    config = obs.ObserversConfig.from_yaml(observers_path.read_text())
+    engine = obs.ObserversEngine(config)
+
+    # v0 uses the example state when no live container is up so the
+    # snapshot still demos the predicate engine. When a container is
+    # running, future versions will pull live state from
+    # PodmanExecSources (Phase B.future).
+    state = obs.example_quadruped_state()
+    summary = engine.tick(state)
+
+    capture_payload: dict | None = None
+    if capture:
+        plan = obs.plan_capture(
+            output_dir=project_dir / ".omnilab" / "captures",
+            duration_seconds=duration,
+            fps=fps,
+        )
+        capture_payload = {
+            "output_dir": str(plan.output_dir),
+            "duration_seconds": plan.duration_seconds,
+            "fps": plan.fps,
+            "expected_frames": plan.expected_frames,
+            "gz_cmd": plan.gz_cmd,
+        }
+
+    _output.emit(
+        human=(
+            f"motion_class: {summary.motion_class or '—'}\n"
+            f"anomalies:    {', '.join(summary.anomalies) or '—'}"
+        ),
+        data={
+            **summary.to_dict(),
+            **({"capture": capture_payload} if capture_payload else {}),
+        },
+    )
+
+
 template_app = typer.Typer(help="Manage starter templates for new projects.")
 app.add_typer(template_app, name="template")
 

@@ -1,0 +1,25 @@
+# Example observers.yaml for a 2D wheeled mobile robot (TurtleBot3-style).
+
+motion_classes:
+  - name: driving_forward
+    when: "linear_velocity.x > 0.02 AND abs(angular_velocity.z) < 0.3"
+
+  - name: turning_left
+    when: "angular_velocity.z > 0.3"
+
+  - name: turning_right
+    when: "angular_velocity.z < -0.3"
+
+  - name: idle
+    when: "abs(linear_velocity.x) < 0.01 AND abs(angular_velocity.z) < 0.05"
+
+anomalies:
+  - name: wheel_spin
+    when: "abs(linear_velocity.x) < 0.01 AND abs(angular_velocity.z) < 0.01 AND wheels.commanded_speed > 0.1"
+    duration_min: 200ms
+    cooldown: 1000ms
+
+  - name: drift
+    when: "abs(linear_velocity.y) > 0.05"
+    duration_min: 100ms
+    cooldown: 500ms
