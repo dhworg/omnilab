@@ -245,6 +245,145 @@ def sim(
 
 
 @app.command()
+def record(
+    project_dir: Path = typer.Option(
+        Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
+    ),
+    name: str | None = typer.Option(
+        None, "--name", help="Override the auto-generated recording id."
+    ),
+    duration: float | None = typer.Option(
+        None, "--duration", help="Auto-stop after this many seconds."
+    ),
+    topics: list[str] | None = typer.Option(
+        None, "--topics", help="Whitelist topics (repeatable). Disables default exclusions."
+    ),
+    with_cameras: bool = typer.Option(
+        False, "--with-cameras", help="Don't exclude camera image / depth topics."
+    ),
+    with_screencast: bool = typer.Option(
+        False, "--with-screencast", help="Capture wf-recorder screencast alongside the bag."
+    ),
+    start_background: bool = typer.Option(
+        False, "--start", help="Start a background recording. Pair with --background."
+    ),
+    background: bool = typer.Option(
+        False, "--background", help="Daemonize the recorder; print id and return."
+    ),
+    stop: str | None = typer.Option(
+        None, "--stop", help="Stop a previously-started background recording by id."
+    ),
+) -> None:
+    """Smart bag recording with metadata sidecar (per spec § Recording)."""
+    from . import record as recmod
+
+    manifest = _load_manifest(project_dir)
+    mgr = recmod.RecordingManager(project_dir)
+
+    if stop:
+        rc = mgr.stop_background(stop)
+        meta = mgr.load_metadata(stop)
+        _output.emit(
+            human=f"Stopped recording {stop} (duration={meta.duration_seconds:.1f}s).",
+            data={"recording_id": stop, "metadata": asdict(meta), "return_code": rc},
+        )
+        raise typer.Exit(rc)
+
+    if not container_running(manifest.name):
+        _output.emit_error(
+            f"container '{manifest.name}' is not running. Run `omnilab up` first.",
+            code=3,
+            container=manifest.name,
+        )
+
+    rec_id = name or recmod.auto_recording_id(manifest.name)
+    excluded: list[str] = list(recmod.DEFAULT_EXCLUDE_PATTERNS)
+    if not with_cameras:
+        excluded.extend(recmod.CAMERA_EXCLUDE_PATTERNS)
+
+    metadata = recmod.RecordingMetadata(
+        schema_version=recmod.SCHEMA_VERSION,
+        recording_id=rec_id,
+        project=manifest.name,
+        created_at=__import__("datetime").datetime.now(__import__("datetime").UTC).isoformat(),
+        image=manifest.image,
+        manifest_digest=recmod.hash_file(project_dir / "omnilab.yaml"),
+        observers_hash=recmod.hash_file(project_dir / "observers.yaml"),
+        topics_excluded=excluded,
+        topics_whitelist=topics,
+    )
+
+    rec_dir = mgr.init_recording(recording_id=rec_id, metadata=metadata)
+
+    if with_screencast and recmod.detect_screencast_tool() is None:
+        _output.emit(
+            human="WARNING: --with-screencast requested but wf-recorder is not installed; bag-only recording.",
+        )
+
+    bag_args = recmod.build_record_args(
+        bag_dir=rec_dir / "bag",
+        topics_whitelist=topics,
+        excluded_patterns=excluded if not topics else None,
+    )
+
+    _output.emit(
+        human=(
+            f"Recording id={rec_id}\n"
+            f"  bag dir: {rec_dir}/bag\n"
+            f"  topics:  {'whitelist=' + ','.join(topics) if topics else 'all minus exclusions'}\n"
+            f"  background: {start_background and background}"
+        ),
+        data={
+            "recording_id": rec_id,
+            "path": str(rec_dir),
+            "metadata": asdict(metadata),
+            "argv": bag_args,
+            "background": bool(start_background and background),
+            "duration_limit_seconds": duration,
+        },
+    )
+
+
+@app.command()
+def replay(
+    recording: str = typer.Argument(..., help="Recording id or path."),
+    rate: float | None = typer.Option(None, "--rate", help="Playback rate multiplier."),
+    start_offset: float | None = typer.Option(
+        None, "--start-offset", help="Skip N seconds from the start."
+    ),
+    loop: bool = typer.Option(False, "--loop", help="Loop playback."),
+    project_dir: Path = typer.Option(
+        Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
+    ),
+) -> None:
+    """Replay a recorded bag. Warns on environment mismatch."""
+    from . import record as recmod
+
+    manifest = _load_manifest(project_dir)
+    mgr = recmod.RecordingManager(project_dir)
+    meta = mgr.load_metadata(recording)
+
+    warnings = recmod.env_mismatch_warnings(meta, current_image=manifest.image)
+    args = recmod.build_replay_args(
+        bag_dir=mgr.recordings_dir / recording / "bag",
+        rate=rate,
+        start_offset=start_offset,
+        loop=loop,
+    )
+
+    _output.emit(
+        human=("\n".join(f"⚠  {w}" for w in warnings) if warnings else "Env OK.")
+        + f"\nReplay argv: {' '.join(args)}",
+        data={
+            "recording_id": recording,
+            "metadata": asdict(meta),
+            "warnings": warnings,
+            "argv": args,
+        },
+    )
+
+
+@app.command()
 def clean(
     project_dir: Path = typer.Option(
         Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
