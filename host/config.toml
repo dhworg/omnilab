@@ -1,0 +1,19 @@
+# bootc-image-builder customization for the DEFAULT interactive ISO.
+#
+# Per project-spec-v1.md (rev 3) § "Install behavior":
+#   The default ISO is interactive — Anaconda runs its full UI, user
+#   creates their own account during install. NO baked credentials.
+#
+# `unattended = false` is the magic bit. Without it (or without any
+# config.toml), bootc-image-builder embeds an autoinstall kickstart
+# that wipes the only disk + skips user creation. With it, Anaconda
+# runs in graphical mode and prompts for everything: language,
+# keyboard, timezone, network, disk + partitioning, root password,
+# user creation.
+#
+# `host/config.toml.dev` is the opt-in fast-iteration variant: it
+# pre-bakes credentials so a VM can install unattended for dev loops.
+# Never use that variant for shareable / physical-machine builds.
+
+[customizations.installer]
+unattended = false
