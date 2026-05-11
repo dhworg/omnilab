@@ -43,11 +43,31 @@ RUN dnf -y install \
     && dnf clean all \
     && rm -rf /var/cache/dnf /var/log/dnf*
 
+# First-boot wizard: ship `initial-setup` so end users create their own
+# username + password on the very first boot. Required by the spec's
+# "no baked credentials in default ISO" hard constraint AND keeps the
+# install flow agnostic to whether bootc-image-builder's Anaconda
+# autoprogresses or shows prompts — user creation is guaranteed.
+#
+# `initial-setup-graphical.service` runs Before=display-manager.service,
+# checks for any UID >= 1000 user, and if none exist drops the user
+# into a GUI wizard for account + timezone + license. After the wizard
+# completes, it writes a flag and exits cleanly; subsequent boots go
+# straight to SDDM.
+RUN dnf -y install \
+        --setopt=install_weak_deps=False \
+        initial-setup-gui \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf /var/log/dnf*
+
 # Boot to graphical (the Fedora bootc base defaults to multi-user.target)
 # and force SDDM to use the Plasma Wayland session at login.
+# Enable initial-setup so the first-boot wizard runs before SDDM.
 RUN ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target \
  && mkdir -p /etc/sddm.conf.d \
- && printf '[General]\nDisplayServer=wayland\n' > /etc/sddm.conf.d/00-omnilab-wayland.conf
+ && printf '[General]\nDisplayServer=wayland\n' > /etc/sddm.conf.d/00-omnilab-wayland.conf \
+ && systemctl enable initial-setup-graphical.service \
+ && systemctl enable initial-setup.service
 
 # Proof-of-life banner. Replaced in Phase B.5 when the omnilab CLI lands.
 COPY hello-omnilab /usr/bin/hello-omnilab

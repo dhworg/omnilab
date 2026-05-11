@@ -42,10 +42,28 @@ Two ISO variants are produced by CI; you almost certainly want the first.
 
 ### Interactive (default — production / physical machine)
 
-Anaconda runs its full UI with `unattended=false`. **You create your own
-user, password, and disk choice during install.** No credentials are
-baked into the image. This is the variant emitted by every push to
-`main`, every tag, and every PR.
+Two-stage install. No credentials are baked into the image.
+
+**Stage 1 — Anaconda (lays down the OS).** `bootc-image-builder`'s
+Anaconda partitions the target disk and writes the OmniLab image. In
+the current builds it may auto-progress through Anaconda's prompts
+without much interaction — that's a known bootc-image-builder quirk
+we're tracking. The important guarantee is no user account is created
+during this stage.
+
+**Stage 2 — `initial-setup` (first boot, you create your account).**
+The first time the machine boots after install, `initial-setup` runs
+before SDDM and shows a wizard prompting for:
+  * **Username + password** (yours, picked at first boot)
+  * Timezone
+  * License acceptance
+After you finish the wizard, the system continues to SDDM and you log
+in with what you just created. The wizard never runs again on
+subsequent boots.
+
+This split is how Fedora Server has worked for years; it keeps
+distribution safe (no shared default credentials) regardless of
+Anaconda's interactivity quirks.
 
 1. Open the latest run of the **build-host-iso** workflow on
    [Actions](https://github.com/dhworg/omnilab/actions/workflows/build-host-iso.yml).
