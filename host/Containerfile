@@ -62,11 +62,13 @@ RUN dnf -y install \
 
 # Boot to graphical (the Fedora bootc base defaults to multi-user.target)
 # and force SDDM to use the Plasma Wayland session at login.
-# Enable initial-setup so the first-boot wizard runs before SDDM.
+# Enable initial-setup so the first-boot wizard runs before SDDM. In
+# Fedora 42 the package consolidated the graphical/text variants into a
+# single initial-setup.service that auto-detects which mode to launch
+# at runtime, so we only enable the one unit.
 RUN ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target \
  && mkdir -p /etc/sddm.conf.d \
  && printf '[General]\nDisplayServer=wayland\n' > /etc/sddm.conf.d/00-omnilab-wayland.conf \
- && systemctl enable initial-setup-graphical.service \
  && systemctl enable initial-setup.service
 
 # Proof-of-life banner. Replaced in Phase B.5 when the omnilab CLI lands.
