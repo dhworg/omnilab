@@ -1,18 +1,20 @@
-# Phase B sub-step 1 host bootc image: Fedora bootc + KDE Plasma 6
-# (Wayland) + Podman + hello-omnilab. Spec amendment 2026-05-09 swapped
-# the desktop from XFCE to KDE Plasma 6 (commit "docs: switch desktop
-# choice from XFCE to KDE Plasma 6"). The omnilab CLI, udev rules, and
-# branding still arrive in Phase B.5.
+# Phase B host bootc image: Fedora bootc + GNOME (Wayland) + Podman.
+# Spec amendments:
+#   - 2026-05-09: XFCE → KDE Plasma 6
+#   - 2026-05-14: KDE Plasma 6 → GNOME (Figma was GNOME-shaped; KWin
+#                 effect-plugin loader fragility cost a login-loop session;
+#                 GNOME's Wayland + NVIDIA Optimus story is cleaner)
+# The omnilab CLI, udev rules, and branding still arrive in Phase B.5.
 FROM quay.io/fedora/fedora-bootc:42
 
 # Aggressive trim to land the ISO ≤ 6 GB (cap is 8 GB):
 #  - install_weak_deps=False drops Recommends/Suggests dnf would otherwise pull
-#  - PIM/Akonadi stack — mail, calendar, address book; irrelevant for a
+#  - Evolution PIM stack — mail, calendar, address book; irrelevant for a
 #    robotics dev OS, biggest single trim
-#  - printer GUIs — no print workflow on a sim laptop. We keep cups
-#    itself because plasma-print-manager hard-requires it; ~50 MB and
-#    masking the daemon (Phase B.5) is cheaper than fighting deps.
-#  - accessibility apps we won't theme (kmag/kmousetool/kmouth/orca)
+#  - GNOME Software, gnome-tour, gnome-initial-setup-gdm — we use our own
+#    first-boot flow (initial-setup) and ship Discover-equivalent via flatpak
+#    later if needed
+#  - games, gnome-classic-session, accessibility extras
 #  - sample wallpapers (replaced with OmniLab branding in Phase B.5)
 #
 # `--exclude=rootfiles`: rootfiles ships /root/.bash_logout etc. and its
@@ -21,25 +23,39 @@ FROM quay.io/fedora/fedora-bootc:42
 RUN dnf -y install \
         --setopt=install_weak_deps=False \
         --exclude=rootfiles \
-        --exclude='akonadi*' \
-        --exclude='kdepim*' \
-        --exclude='kmail*' \
-        --exclude='korganizer*' \
-        --exclude='kontact*' \
-        --exclude='kaddressbook*' \
-        --exclude='knotes*' \
-        --exclude='kalarm*' \
-        --exclude='ktnef*' \
-        --exclude='akregator*' \
-        --exclude='plasma-print-manager*' \
-        --exclude='system-config-printer' \
-        --exclude='kmag' \
-        --exclude='kmousetool' \
-        --exclude='kmouth' \
-        --exclude='orca' \
-        --exclude='plasma-workspace-wallpapers' \
-        @kde-desktop-environment \
+        --exclude='evolution*' \
+        --exclude='gnome-tour' \
+        --exclude='gnome-initial-setup' \
+        --exclude='gnome-classic-session' \
+        --exclude='gnome-boxes' \
+        --exclude='gnome-software' \
+        --exclude='gnome-photos' \
+        --exclude='gnome-maps' \
+        --exclude='gnome-weather' \
+        --exclude='gnome-clocks' \
+        --exclude='gnome-contacts' \
+        --exclude='cheese' \
+        --exclude='rhythmbox' \
+        --exclude='totem' \
+        --exclude='gnome-backgrounds' \
+        @workstation-product-environment \
         podman \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf /var/log/dnf*
+
+# GNOME extensions for the Figma-style desktop (Phase D will configure
+# them via dconf; here we just install). Dash-to-Dock = floating dock,
+# Blur My Shell = the liquid-glass top bar / notification panel, GSConnect
+# = KDE Connect parity, User Themes = custom shell theme support, AppIndicator
+# = system tray for legacy apps. gnome-tweaks for first-time customization.
+RUN dnf -y install \
+        --setopt=install_weak_deps=False \
+        gnome-shell-extension-dash-to-dock \
+        gnome-shell-extension-blur-my-shell \
+        gnome-shell-extension-gsconnect \
+        gnome-shell-extension-user-theme \
+        gnome-shell-extension-appindicator \
+        gnome-tweaks \
     && dnf clean all \
     && rm -rf /var/cache/dnf /var/log/dnf*
 
@@ -49,27 +65,50 @@ RUN dnf -y install \
 # install flow agnostic to whether bootc-image-builder's Anaconda
 # autoprogresses or shows prompts — user creation is guaranteed.
 #
-# `initial-setup-graphical.service` runs Before=display-manager.service,
-# checks for any UID >= 1000 user, and if none exist drops the user
-# into a GUI wizard for account + timezone + license. After the wizard
-# completes, it writes a flag and exits cleanly; subsequent boots go
-# straight to SDDM.
+# (We exclude gnome-initial-setup above because we don't want two
+# competing wizards. initial-setup runs Before=display-manager.service.)
 RUN dnf -y install \
         --setopt=install_weak_deps=False \
         initial-setup-gui \
     && dnf clean all \
     && rm -rf /var/cache/dnf /var/log/dnf*
 
-# Boot to graphical (the Fedora bootc base defaults to multi-user.target)
-# and force SDDM to use the Plasma Wayland session at login.
-# Enable initial-setup so the first-boot wizard runs before SDDM. In
-# Fedora 42 the package consolidated the graphical/text variants into a
-# single initial-setup.service that auto-detects which mode to launch
-# at runtime, so we only enable the one unit.
+# Boot to graphical (the Fedora bootc base defaults to multi-user.target).
+# GDM (the GNOME display manager) is the default for the workstation env,
+# so we don't need to force a specific session — gdm picks Wayland on
+# capable hardware automatically.
 RUN ln -sf /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target \
- && mkdir -p /etc/sddm.conf.d \
- && printf '[General]\nDisplayServer=wayland\n' > /etc/sddm.conf.d/00-omnilab-wayland.conf \
+ && systemctl enable gdm.service \
  && systemctl enable initial-setup.service
+
+# Phase B.5 — NVIDIA proprietary driver + CUDA libs + nvidia-container-toolkit.
+# RPM Fusion hosts the proprietary nvidia bits on Fedora; we add the free+nonfree
+# repos in the first dnf invocation so the next one can resolve akmod-nvidia.
+# akmod (not kmod): the source-based variant rebuilds the kernel module when the
+# kernel updates, which is what we want for a long-lived bootc deployment.
+# CUDA libs come from xorg-x11-drv-nvidia-cuda; needed for Gazebo Ogre/OptiX paths.
+# vaapi driver enables hardware video decode under the proprietary stack.
+# nvidia-container-toolkit + the omnilab-nvidia-cdi.service below give podman
+# GPU access without the user manually running nvidia-ctk on first boot.
+RUN dnf -y install \
+        "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
+        "https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm" \
+ && dnf -y install \
+        --setopt=install_weak_deps=False \
+        akmod-nvidia \
+        xorg-x11-drv-nvidia-cuda \
+        nvidia-vaapi-driver \
+        libva-utils \
+        nvidia-container-toolkit \
+        nvidia-settings \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf /var/log/dnf*
+
+# Kernel cmdline (blacklist nouveau, enable nvidia-drm.modeset for Wayland)
+# and the first-boot CDI service for podman come in via overlay/.
+COPY overlay/usr/lib/bootc/kargs.d/10-nvidia.toml /usr/lib/bootc/kargs.d/10-nvidia.toml
+COPY overlay/usr/lib/systemd/system/omnilab-nvidia-cdi.service /usr/lib/systemd/system/omnilab-nvidia-cdi.service
+RUN systemctl enable omnilab-nvidia-cdi.service
 
 # Proof-of-life banner. Replaced in Phase B.5 when the omnilab CLI lands.
 COPY hello-omnilab /usr/bin/hello-omnilab

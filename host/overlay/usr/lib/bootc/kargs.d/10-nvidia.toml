@@ -1,0 +1,17 @@
+# Phase B.5 — NVIDIA proprietary driver kernel args.
+# bootc reads /usr/lib/bootc/kargs.d/*.toml at deployment time and appends
+# these to the kernel command line. Without these, the nouveau open driver
+# claims the card and the proprietary nvidia module fails to load.
+#
+# nvidia-drm.modeset=0 (not =1): on Optimus laptops (Intel iGPU + NVIDIA
+# dGPU where the panel is wired to the iGPU), modeset=1 makes KWin/mutter
+# try to atomic-modeset the NVIDIA card too — which has no display attached
+# — and the Wayland session crashes. With modeset=0, nvidia loads as a
+# render-only / compute device (perfect for CUDA + container GPU passthrough),
+# the Intel iGPU handles display via mesa, GNOME Wayland comes up clean.
+# Confirmed on 2026-05-13 — modeset=1 was the trigger for the Plasma login loop.
+kargs = [
+    "rd.driver.blacklist=nouveau",
+    "modprobe.blacklist=nouveau",
+    "nvidia-drm.modeset=0",
+]

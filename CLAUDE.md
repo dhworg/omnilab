@@ -1,7 +1,8 @@
 # OmniLab — Claude Code session bootstrap
 
 Read this first. Then [`project-spec-v1.md`](./project-spec-v1.md) for the
-full architecture and scope (architecture rev 3 as of 2026-05-10).
+full architecture and scope (architecture rev 4 as of 2026-05-14 — desktop
+swapped KDE Plasma 6 → GNOME; see the amendment block at the top of the spec).
 
 ## Project summary
 
@@ -19,7 +20,14 @@ working sim + hardware dev environment in 15 minutes.
 first ISO built and bootc loop verified end-to-end.
 
 **Phase B — Core layers (B.4 in progress):**
-- ✅ **B.1**: Host swapped to KDE Plasma 6 on Wayland
+- ✅ **B.1**: Host swapped to KDE Plasma 6 on Wayland *(superseded — see B.1b)*
+- 🆕 **B.1b** (2026-05-14): Desktop swapped to **GNOME** on Wayland per
+  spec amendment. Figma reference was GNOME-shaped (Activities-style brand
+  left, clock center, indicators right, drop-down notification panel,
+  Dash-to-Dock bottom). Plasma was being forced into that. Also: KWin
+  segfaulted on a kwinrc entry enabling a non-existent effect plugin →
+  Plasma login loop, ~6h to diagnose. GNOME's Wayland + NVIDIA Optimus
+  story is also better. NVIDIA layer carries forward (DE-agnostic).
 - ✅ **B.2**: `ros-jazzy-gz-harmonic` project image built, on GHCR
 - ✅ **B.3**: `omnilab` CLI v0 (5 commands: `new`, `up`, `down`, `sim`,
   `doctor`) with 40 unit tests, two-Python-version CI matrix
@@ -39,7 +47,8 @@ first ISO built and bootc loop verified end-to-end.
   - ✅ `omnilab doctor --full` for extended health checks.
   - 234 → 240+ unit tests, two Python versions in CI.
 - ⏳ **B.5 NEXT**: Host hardening — udev rules, group memberships,
-  NVIDIA stack, branding (fastfetch, fonts, wallpapers, KDE theming)
+  NVIDIA stack, branding (fastfetch, fonts, wallpapers, GNOME theming
+  via extensions + GTK + dconf preset)
 - ⏸ **B.6**: Full smoke-test matrix in CI (Gazebo headless on
   self-hosted dGPU runner)
 
@@ -47,15 +56,16 @@ first ISO built and bootc loop verified end-to-end.
 verification, agent-loop verification.
 
 **Phase D — Polish:** `llm-log-analyzer` skill-pack, mkdocs docs site,
-KDE theming for the Figma-inspired aesthetic.
+GNOME theming for the Figma-inspired aesthetic (Dash-to-Dock + Blur My
+Shell + libadwaita accent + dconf preset).
 
 See `project-spec-v1.md` § "Phase status" for the up-to-date breakdown.
 
 ## Architecture (3 layers + 1 pillar)
 
 1. **Host (`omnilab-host`)** — Fedora bootc 42 OCI image, atomic updates
-   via `bootc upgrade`. Contains kernel, KDE Plasma 6 on Wayland, Podman
-   + nvidia-container-toolkit, GPU drivers, udev rules, the `omnilab`
+   via `bootc upgrade`. Contains kernel, GNOME on Wayland (gdm + gnome-shell),
+   Podman + nvidia-container-toolkit, GPU drivers, udev rules, the `omnilab`
    CLI. No ROS.
 2. **Project images (`omnilab-projects`)** — OCI images with pinned
    ROS 2 Jazzy + Gazebo Harmonic + ros-gz + firmware tools. Referenced
@@ -133,7 +143,7 @@ The CLI is the agent API. Every command honors:
 | Project base | Ubuntu 24.04 |
 | ROS 2 | Jazzy Jalisco (LTS to May 2029) |
 | Simulator | Gazebo Harmonic (LTS to Sep 2028) |
-| Desktop | KDE Plasma 6 on Wayland |
+| Desktop | GNOME on Wayland (gdm + gnome-shell) |
 | Container runtime | Podman + nvidia-container-toolkit |
 | GPU tiers | iGPU (Intel/AMD) baseline; NVIDIA proprietary tier |
 | CLI language | Python (Typer + Rich/Textual for TUIs) |

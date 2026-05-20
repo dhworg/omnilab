@@ -1,7 +1,18 @@
 # Project Spec — v1
 
 **Working name:** OmniLab (rename later)
-**Status:** v1 scope locked, architecture rev 3 (CLI expansion + agent perception pillar)
+**Status:** v1 scope locked, architecture rev 4 (GNOME on Wayland desktop)
+
+> **Amendment 2026-05-14:** Desktop swapped **KDE Plasma 6 → GNOME** on Wayland.
+> Rationale: the Figma reference design (centred clock + dropdown notification
+> centre + Activities-style brand on the left + dock at bottom) lines up with
+> GNOME's native shell pattern; Plasma was being forced into that shape via
+> custom panels, plasmoids, and a hand-rolled translucent theme that turned out
+> to be fragile (a kwinrc enabling a non-existent effect plugin triggered a
+> Plasma login loop on 2026-05-13, ~6 hours to diagnose). GNOME also has a
+> noticeably smoother Wayland + NVIDIA Optimus story out of the box, which the
+> Phase C NVIDIA verification tier benefits from. Precedent: 2026-05-09
+> XFCE→Plasma amendment; same shape, opposite direction.
 
 ---
 
@@ -33,7 +44,7 @@ A bootc-based immutable Linux image. Defined as a `Containerfile`, distributed a
 
 The host contains *only*:
 - Linux kernel + base userspace (Fedora bootc base)
-- Display server (Wayland), KDE Plasma 6 desktop
+- Display server (Wayland), GNOME desktop
 - GPU drivers (Mesa for iGPU + NVIDIA proprietary; loads conditionally based on detected hardware)
 - Container runtime (Podman) + nvidia-container-toolkit
 - udev rules for the four target MCUs + USB cameras
@@ -277,7 +288,7 @@ USB → fresh laptop → working sim + hardware in 15 minutes.
 | Project base | Ubuntu 24.04 (required for ROS 2 Jazzy) |
 | ROS 2 | Jazzy Jalisco (LTS until May 2029) |
 | Simulator | Gazebo Harmonic (LTS, EOL Sep 2028) |
-| Desktop | KDE Plasma 6 on Wayland |
+| Desktop | GNOME on Wayland (gdm + gnome-shell) |
 | Container runtime | Podman + nvidia-container-toolkit |
 | GPU tiers | iGPU (Intel/AMD) baseline; NVIDIA proprietary tier |
 | CLI language | Python (Typer + Rich/Textual for TUIs) |
@@ -290,7 +301,7 @@ USB → fresh laptop → working sim + hardware in 15 minutes.
 ## v1 must-do
 
 1. Bootable interactive ISO installs cleanly on commodity laptops, iGPU and NVIDIA both work
-2. Host boots to KDE Plasma, default user (created by user during install) has correct group memberships, udev rules active
+2. Host boots to GNOME, default user (created by user during install) has correct group memberships, udev rules active
 3. `omnilab` CLI present, all listed commands functional, all conventions respected
 4. `omnilab new --template nav2-base` produces a working project in <60s
 5. `omnilab sim` opens Gazebo with the demo world + RViz alongside; robot navigates
@@ -325,7 +336,7 @@ USB → fresh laptop → working sim + hardware in 15 minutes.
 
 Seven tests run on every ISO build (in CI) and on first boot (locally):
 
-1. **Boot:** ISO installs, host boots to KDE Plasma, login works
+1. **Boot:** ISO installs, host boots to GNOME, login works
 2. **CLI:** `omnilab doctor` returns all green; `--json` output is valid JSON
 3. **Sim (headless, automated):** `omnilab sim --headless --test` runs nav2 to a goal, asserts goal reached, exits with PASS/FAIL
 4. **Sim (GUI demo):** `omnilab sim` opens, GUI renders, robot moves on command (manual verification, scripted screenshot diff in CI)
@@ -455,7 +466,7 @@ Effort isn't the binding constraint anymore — these are parked for *direction*
 
 - ROS 2 Jazzy ↔ Ubuntu 24.04 (set by upstream) — applies to project image
 - Gazebo Harmonic ↔ ROS 2 Jazzy (set by upstream) — applies to project image
-- ISO size ≤ 8 GB (KDE pushes us closer to the cap; ~5–6 GB expected)
+- ISO size ≤ 8 GB (GNOME pushes us closer to the cap; ~5–6 GB expected)
 - iGPU baseline must work without dGPU
 - No baked credentials in default ISO (production safety)
 
@@ -483,11 +494,12 @@ Effort isn't the binding constraint anymore — these are parked for *direction*
 **Phase A — Bootstrap (DONE):** Repo scaffold, `build-host-iso.yml`, first ISO building in CI, bootc loop verified end-to-end.
 
 **Phase B — Core layers (sub-steps 1-3 DONE; sub-step 4 NEXT):**
-- ✅ B.1: Host swapped to KDE Plasma 6 on Wayland
+- ✅ B.1: Host swapped to KDE Plasma 6 on Wayland *(superseded by 2026-05-14 amendment — see below)*
 - ✅ B.2: `ros-jazzy-gz-harmonic` project image built, pushed to GHCR
 - ✅ B.3: `omnilab` CLI v0 (5 commands: new, up, down, sim, doctor) with 40 unit tests
 - ⏳ **B.4: ISO interactive variant + CLI expansion + observe pillar (CURRENT WORK)**
-- ⏸ B.5: Host hardening — udev rules, group memberships, NVIDIA stack, branding (fastfetch, fonts, wallpapers, KDE theming)
+- ⏸ B.5: Host hardening — udev rules, group memberships, NVIDIA stack, branding (fastfetch, fonts, wallpapers, GNOME theming)
+- 🆕 B.1b (2026-05-14): Host swapped KDE Plasma 6 → GNOME on Wayland (NVIDIA already validated live on Plasma deployment; package layer is DE-agnostic and carries forward)
 - ⏸ B.6: Full smoke-test matrix in CI
 
 **Phase C — Verification (gates v1 release, can't be parallelized):**
@@ -498,7 +510,7 @@ Effort isn't the binding constraint anymore — these are parked for *direction*
 **Phase D — Polish:**
 - ⏸ `llm-log-analyzer` skill-pack
 - ⏸ Docs site (mkdocs full content)
-- ⏸ KDE theming for the Figma-inspired aesthetic
+- ⏸ GNOME theming for the Figma-inspired aesthetic (Dash-to-Dock, Blur My Shell, libadwaita custom accent, dconf preset)
 
 ---
 
