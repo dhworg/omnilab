@@ -12,6 +12,11 @@ from .gpu import GpuKind, detect_gpu
 from .gpu_doctor import PRIME_ENV
 from .manifest import OmnilabManifest
 
+# Where the project dir is mounted, and where `pair join`'s Cyclone config
+# therefore lands inside the container.
+PAIR_CONFIG_RELATIVE_PATH = Path(".omnilab") / "cyclonedds.xml"
+PAIR_CONFIG_CONTAINER_PATH = "/workspace/.omnilab/cyclonedds.xml"
+
 
 @dataclass
 class HostContext:
@@ -20,6 +25,10 @@ class HostContext:
     gpu: GpuKind
     wayland_display: str | None  # path to host's wayland socket, or None
     project_dir: Path  # the directory containing omnilab.yaml
+    # Set when `omnilab pair join` has written .omnilab/cyclonedds.xml.
+    # Detected here rather than probed inside build_run_args so that
+    # function stays pure and testable.
+    pair_config_present: bool = False
     # Xwayland fallback — default None so callers that don't care about X11
     # (and every existing test) can omit them.
     x11_socket_dir: str | None = None  # host path containing X0 / X1 etc.
@@ -76,6 +85,7 @@ def detect_host_context(project_dir: Path) -> HostContext:
         x11_display=x11_disp,
         x11_auth_file=x11_auth,
         project_dir=project_dir.resolve(),
+        pair_config_present=(project_dir / PAIR_CONFIG_RELATIVE_PATH).exists(),
     )
 
 
@@ -167,9 +177,17 @@ def build_run_args(manifest: OmnilabManifest, ctx: HostContext, *, detach: bool 
     args += ["-v", f"{ctx.project_dir}:/workspace:Z"]
     args += ["-w", "/workspace"]
 
-    # ROS env from manifest.
+    # ROS env from manifest. A paired domain overrides the manifest default
+    # so both peers land on the same DDS partition.
     args += ["-e", f"RMW_IMPLEMENTATION={manifest.ros.rmw}"]
-    args += ["-e", f"ROS_DOMAIN_ID={manifest.ros.domain_id}"]
+    args += ["-e", f"ROS_DOMAIN_ID={manifest.effective_domain_id}"]
+
+    # Point Cyclone DDS at the config `omnilab pair join` wrote. Without
+    # this the XML is generated, mounted at /workspace/.omnilab, and then
+    # completely ignored — the interface binding and any discovery-server
+    # peers never take effect, so pairing silently does nothing.
+    if ctx.pair_config_present:
+        args += ["-e", f"CYCLONEDDS_URI=file://{PAIR_CONFIG_CONTAINER_PATH}"]
 
     # Image at the end.
     args.append(manifest.image)

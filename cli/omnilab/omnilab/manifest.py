@@ -123,3 +123,30 @@ class OmnilabManifest(BaseModel):
         with path.open() as f:
             data = yaml.safe_load(f) or {}
         return cls.model_validate(data)
+
+    @property
+    def effective_domain_id(self) -> int:
+        """The ROS_DOMAIN_ID the container should actually run on.
+
+        A pairing derives its domain from the shared code, so once paired
+        it must win over the manifest default — otherwise the two peers
+        write a matching Cyclone config and then start their containers on
+        different domains, which looks exactly like "pairing did nothing".
+        """
+        return self.pair.domain_id if self.pair else self.ros.domain_id
+
+
+def write_pair_config(project_dir: Path, pair: PairConfig) -> Path:
+    """Persist the `pair:` block into omnilab.yaml, leaving the rest alone.
+
+    Re-dumps the document rather than editing in place, so YAML comments
+    are not preserved — same tradeoff `tune --save` already makes. Key
+    order is preserved so diffs stay readable.
+    """
+    path = Path(project_dir) / "omnilab.yaml"
+    with path.open() as f:
+        data = yaml.safe_load(f) or {}
+    data["pair"] = pair.model_dump()
+    with path.open("w") as f:
+        yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
+    return path

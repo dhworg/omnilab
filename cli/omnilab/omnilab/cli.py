@@ -20,7 +20,7 @@ import yaml
 
 from . import __version__, _output, _safety
 from .gpu import detect_gpu, resolve_gpu_mode
-from .manifest import OmnilabManifest
+from .manifest import OmnilabManifest, PairConfig, write_pair_config
 from .podman import (
     build_run_args,
     container_running,
@@ -877,6 +877,18 @@ def pair_join(
     backend = pairmod.detect_firewall_backend()
     fw_cmds = pairmod.firewall_commands(domain_id=domain_id, backend=backend)
 
+    # Persist the pairing into omnilab.yaml. Without this, `omnilab up`
+    # reads ros.domain_id and starts the container on the wrong DDS
+    # partition — the XML above gets written and then ignored, which is
+    # indistinguishable from pairing having done nothing at all.
+    manifest_written = False
+    if (project_dir / "omnilab.yaml").exists():
+        write_pair_config(
+            project_dir,
+            PairConfig(domain_id=domain_id, config=mode),
+        )
+        manifest_written = True
+
     result = pairmod.PairResult(
         code=code,
         domain_id=domain_id,
@@ -887,13 +899,24 @@ def pair_join(
         cyclonedds_xml_path=str(xml_path),
         firewall_backend=backend,
     )
+    manifest_line = (
+        f"  omnilab.yaml: pair.domain_id={domain_id} written\n"
+        if manifest_written
+        else "  omnilab.yaml: not found — run `omnilab pair join` from the project dir\n"
+    )
     _output.emit(
         human=(
             f"Paired. mode={mode}, domain_id={domain_id}, iface={interface}\n"
             f"  Cyclone DDS config: {xml_path}\n"
-            f"  Firewall backend: {backend} ({len(fw_cmds)} rules to apply)"
+            f"{manifest_line}"
+            f"  Firewall backend: {backend} ({len(fw_cmds)} rules to apply)\n"
+            "  Restart the container for this to take effect: `omnilab down && omnilab up`"
         ),
-        data={**result.to_dict(), "firewall_commands": fw_cmds},
+        data={
+            **result.to_dict(),
+            "firewall_commands": fw_cmds,
+            "manifest_updated": manifest_written,
+        },
     )
 
 
