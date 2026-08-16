@@ -34,7 +34,20 @@ ActionKind = Literal[
     "process_term",
     "process_kill",
     "report_d_state",
+    "container_exec_kill",  # kill a process INSIDE a running container by PID
 ]
+
+# Patterns whose duplicate presence in a running container is a sign of
+# the "double-launched sim" mess that omnilab clean is supposed to reap.
+# Match against `ps -ef` cmd column.
+_SIM_DUPLICATE_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("ros2 launch", "ros2 launch process"),
+    ("gz sim -r", "gz sim launcher"),
+    ("gz sim server", "gz sim server"),
+    ("gz sim gui", "gz sim gui"),
+    ("parameter_bridge", "ros_gz_bridge parameter_bridge"),
+    ("robot_state_publisher", "robot_state_publisher"),
+)
 
 
 @dataclass
@@ -51,6 +64,10 @@ class ContainerInfo:
     name: str
     project: str | None  # value of omnilab.project label
     state: str  # 'running', 'created', 'exited', 'paused'
+    # Populated only for running containers — list of "PID\tCMD" tuples
+    # read via `podman exec <name> ps -eo pid,cmd --no-headers`. Used by
+    # the planner to detect duplicate sim processes.
+    inside_procs: list[tuple[int, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -96,6 +113,32 @@ def _select_containers(
     if project is None:
         return []
     return [c for c in containers if c.project == project]
+
+
+def _find_duplicate_sim_procs(
+    inside_procs: list[tuple[int, str]],
+) -> list[tuple[int, str]]:
+    """Given a list of (pid, cmdline) tuples from a running container,
+    return (pid, human_label) pairs for every process that's a
+    duplicate of a known sim pattern.
+
+    Strategy: for each `_SIM_DUPLICATE_PATTERNS` entry, count matches.
+    If more than 1 match, keep the lowest-PID instance (oldest, most
+    likely the "real" one a user started first) and plan kills for the
+    rest.
+    """
+    duplicates: list[tuple[int, str]] = []
+    for pattern, label in _SIM_DUPLICATE_PATTERNS:
+        matches = sorted(
+            [(pid, cmd) for pid, cmd in inside_procs if pattern in cmd],
+            key=lambda x: x[0],
+        )
+        if len(matches) <= 1:
+            continue
+        # Skip the oldest; reap the rest.
+        for pid, _ in matches[1:]:
+            duplicates.append((pid, label))
+    return duplicates
 
 
 def _walk_descendants(
@@ -144,21 +187,31 @@ def plan_cleanup(
     targets = _select_containers(containers, project, all_projects=all_projects)
     for c in targets:
         if c.state == "running":
+            # Conservative: a RUNNING container in-scope is treated as
+            # "in use" — we don't tear it down by default. But we DO
+            # scan for duplicate sim processes inside it (the "two
+            # gz sims somehow running" mess) and plan kills for them.
+            # This is the gap that made `omnilab clean` say "Nothing to
+            # clean" today even with duplicate sims visibly running.
+            duplicates = _find_duplicate_sim_procs(c.inside_procs)
+            for pid, label in duplicates:
+                plan.actions.append(
+                    CleanupAction(
+                        kind="container_exec_kill",
+                        target=f"{c.name}:{pid}",
+                        reason=f"duplicate {label} inside running container",
+                    )
+                )
+        else:
+            # Stopped / exited / created — these are pure leftovers.
+            # Remove unconditionally (no need to stop first).
             plan.actions.append(
                 CleanupAction(
-                    kind="container_stop",
+                    kind="container_rm",
                     target=c.name,
-                    reason=f"running container in scope (project={c.project})",
+                    reason=f"remove leftover {c.state} container (project={c.project})",
                 )
             )
-        # Always rm to clean leftover stopped containers from this project.
-        plan.actions.append(
-            CleanupAction(
-                kind="container_rm",
-                target=c.name,
-                reason=f"remove container shell (project={c.project})",
-            )
-        )
 
     # 3. Project-scoped processes — only when --aggressive (default
     #    conservative path lets podman do the orphan reaping).
@@ -287,13 +340,30 @@ def read_container_snapshot() -> list[ContainerInfo]:
 
 
 def _parse_podman_ps_line(line: str) -> ContainerInfo | None:
-    """Parse a podman ps tab-separated line."""
+    """Parse a podman ps tab-separated line.
+
+    Note: podman's --format "{{.Labels}}" returns the labels as
+        `map[k1:v1 k2:v2 ...]`
+    — space-separated, key:value (NOT key=value), wrapped in `map[...]`.
+    Earlier versions of this parser assumed `k1=v1,k2=v2` which matched
+    nothing and silently caused `omnilab clean` to never identify any
+    container as in-scope. That's why "Nothing to clean" was the
+    universal answer regardless of state. Fixed 2026-05-12 (task #21).
+    """
     parts = line.split("\t", 2)
     if len(parts) < 3:
         return None
     name, state, labels = parts
+    # Strip the surrounding "map[...]" if present.
+    labels = labels.strip()
+    if labels.startswith("map[") and labels.endswith("]"):
+        labels = labels[4:-1]
     project: str | None = None
-    for label in labels.split(","):
+    for label in labels.split():
+        # Each label is "key:value"; older versions used "key=value".
+        if label.startswith(f"{LABEL_KEY}:"):
+            project = label.split(":", 1)[1].strip()
+            break
         if label.startswith(f"{LABEL_KEY}="):
             project = label.split("=", 1)[1].strip()
             break
@@ -334,9 +404,48 @@ def _do_action(action: CleanupAction, *, aggressive: bool) -> int:
         return _signal_pid(int(action.target), signal.SIGTERM)
     if action.kind == "process_kill":
         return _signal_pid(int(action.target), signal.SIGKILL)
+    if action.kind == "container_exec_kill":
+        # target encoded as "<container_name>:<pid>"
+        container, pid_s = action.target.split(":", 1)
+        return subprocess.run(
+            ["podman", "exec", "-u", "0", container, "kill", "-9", pid_s],
+            check=False,
+            capture_output=True,
+        ).returncode
     if action.kind == "report_d_state":
         return 0  # report-only
     return 1
+
+
+def read_inside_container_procs(container_name: str) -> list[tuple[int, str]]:
+    """Read `ps -eo pid,cmd` inside a running container. Returns a list of
+    (pid, cmd) tuples. Empty list on any error (container not running,
+    podman missing, etc.) — callers treat empty as "no duplicates to
+    detect."
+    """
+    try:
+        r = subprocess.run(
+            ["podman", "exec", container_name, "ps", "-eo", "pid,cmd", "--no-headers"],
+            check=False, capture_output=True, text=True, timeout=4,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+    if r.returncode != 0:
+        return []
+    out: list[tuple[int, str]] = []
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        pid_s, cmd = parts
+        try:
+            out.append((int(pid_s), cmd))
+        except ValueError:
+            continue
+    return out
 
 
 def _signal_pid(pid: int, sig: signal.Signals) -> int:

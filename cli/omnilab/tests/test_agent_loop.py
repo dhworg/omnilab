@@ -20,6 +20,7 @@ from pathlib import Path
 from omnilab.inspect import SCHEMA_VERSION as INSPECT_SCHEMA
 from omnilab.inspect import build_snapshot
 from omnilab.inspect_sources import FakeSources
+from omnilab.observe import SCHEMA_VERSION as OBSERVE_SCHEMA
 from omnilab.observe import ObserversConfig, ObserversEngine, example_quadruped_state
 from omnilab.template import find_repo_templates_dir
 from omnilab.tune import ParamSet, build_save_yaml, infer_value_type
@@ -39,9 +40,13 @@ def test_agent_loop_round_trip(tmp_path: Path):
     summary_json = json.dumps(summary.to_dict())  # JSON-serializable
 
     payload = json.loads(summary_json)
-    assert payload["motion_class"] == "walking_forward"
+    # Numeric-only: this loop never captures an image, so the verified
+    # field stays null and the agent is forced to notice that.
+    assert payload["numeric_motion_class"] == "walking_forward"
+    assert payload["verified_motion_class"] is None
+    assert payload["verification_mode"] == "no_image_source"
     assert isinstance(payload["anomalies"], list)
-    assert payload["schema_version"] == "1"
+    assert payload["schema_version"] == OBSERVE_SCHEMA
 
     # 2. tune — agent decides to bump max_velocity, emits a `--set` and
     # asks for --save.
@@ -77,7 +82,7 @@ def test_agent_loop_observe_to_tune_decision():
     )
     engine = ObserversEngine(ObserversConfig.from_yaml(text))
     summary = engine.tick(falling_state)
-    assert summary.motion_class == "falling"
+    assert summary.numeric_motion_class == "falling"
 
     # Agent's reaction: stop. infer_value_type accepts the bool from text.
     assert infer_value_type("false") is False

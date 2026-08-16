@@ -126,13 +126,16 @@ class PodmanExecSources:
     # ---- gazebo ---------------------------------------------------------
 
     def get_gazebo_state(self) -> GazeboState:
-        rc, out, _ = self._exec("timeout 1s gz topic --list 2>&1 || true")
+        # gz topic --list typically takes ~2.1s for its first call after
+        # gz sim comes up; the previous 1s timeout always fired,
+        # reporting connected=False even when gz was clearly running.
+        rc, out, _ = self._exec("timeout 4s gz topic --list 2>&1 || true")
         connected = rc == 0 and "/world/" in out
         sim_time: float | None = None
         rtf: float | None = None
         if connected:
             rc_s, stats_out, _ = self._exec(
-                "timeout 1.5s gz topic -e -t /stats -n 1 2>&1 || true"
+                "timeout 3s gz topic -e -t /stats -n 1 2>&1 || true"
             )
             if rc_s in (0, 124):
                 # /stats publishes WorldStatistics msgs with sim_time + rtf.

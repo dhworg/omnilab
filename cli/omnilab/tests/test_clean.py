@@ -54,7 +54,11 @@ def test_parse_proc_status_invalid():
 
 
 def test_parse_podman_ps_line():
-    line = "myproj\trunning\tomnilab.project=myproj,foo=bar"
+    """podman's `{{.Labels}}` renders as `map[k1:v1 k2:v2]` — space-separated
+    key:value pairs, NOT the comma-separated key=value shape an earlier
+    parser assumed (see _parse_podman_ps_line docstring, fixed 2026-05-12).
+    """
+    line = "myproj\trunning\tmap[omnilab.project:myproj foo:bar]"
     c = _parse_podman_ps_line(line)
     assert c is not None
     assert c.name == "myproj"
@@ -62,8 +66,16 @@ def test_parse_podman_ps_line():
     assert c.project == "myproj"
 
 
+def test_parse_podman_ps_line_legacy_equals_format():
+    """The parser still accepts the older `key=value` shape."""
+    line = "myproj\trunning\tomnilab.project=myproj"
+    c = _parse_podman_ps_line(line)
+    assert c is not None
+    assert c.project == "myproj"
+
+
 def test_parse_podman_ps_line_no_label():
-    line = "stranger\trunning\tfoo=bar"
+    line = "stranger\trunning\tmap[foo:bar]"
     c = _parse_podman_ps_line(line)
     assert c is not None
     assert c.project is None
@@ -98,8 +110,8 @@ def test_walk_descendants_no_children():
 
 def test_plan_default_scope_only_current_project():
     containers = [
-        ContainerInfo(name="my", project="my", state="running"),
-        ContainerInfo(name="other", project="other", state="running"),
+        ContainerInfo(name="my", project="my", state="exited"),
+        ContainerInfo(name="other", project="other", state="exited"),
     ]
     plan = plan_cleanup(project="my", containers=containers, procs=[])
     targets = {a.target for a in plan.actions}
@@ -109,9 +121,9 @@ def test_plan_default_scope_only_current_project():
 
 def test_plan_all_projects_takes_everything():
     containers = [
-        ContainerInfo(name="my", project="my", state="running"),
-        ContainerInfo(name="other", project="other", state="running"),
-        ContainerInfo(name="stranger", project=None, state="running"),
+        ContainerInfo(name="my", project="my", state="exited"),
+        ContainerInfo(name="other", project="other", state="exited"),
+        ContainerInfo(name="stranger", project=None, state="exited"),
     ]
     plan = plan_cleanup(
         project=None, containers=containers, procs=[], all_projects=True
@@ -122,14 +134,45 @@ def test_plan_all_projects_takes_everything():
     assert "stranger" not in targets  # no omnilab.project label
 
 
-def test_plan_running_container_gets_stop_then_rm():
+def test_plan_running_container_is_left_alone():
+    """A running in-scope container is treated as in use, not a leftover.
+
+    Tearing it down by default would kill the sim the user is watching, so
+    the planner leaves it and only reaps duplicates *inside* it.
+    """
     plan = plan_cleanup(
         project="p",
         containers=[ContainerInfo(name="p", project="p", state="running")],
         procs=[],
     )
+    assert plan.actions == []
+
+
+def test_plan_running_container_reaps_duplicate_sims_inside():
+    """The case that made `clean` useless: two gz sims visibly running and
+    the plan said "nothing to clean". Oldest PID survives, rest are reaped.
+    """
+    plan = plan_cleanup(
+        project="p",
+        containers=[
+            ContainerInfo(
+                name="p",
+                project="p",
+                state="running",
+                inside_procs=[
+                    (101, "gz sim -r world.sdf"),
+                    (202, "gz sim -r world.sdf"),
+                    (303, "gz sim -r world.sdf"),
+                ],
+            )
+        ],
+        procs=[],
+    )
     kinds = [a.kind for a in plan.actions]
-    assert kinds == ["container_stop", "container_rm"]
+    assert kinds == ["container_exec_kill", "container_exec_kill"]
+    # Lowest PID (oldest, most likely the one the user started) survives.
+    targets = {a.target for a in plan.actions}
+    assert targets == {"p:202", "p:303"}
 
 
 def test_plan_stopped_container_gets_only_rm():
@@ -206,12 +249,12 @@ def test_plan_to_dict_round_trips():
 
     plan = plan_cleanup(
         project="p",
-        containers=[ContainerInfo(name="p", project="p", state="running")],
+        containers=[ContainerInfo(name="p", project="p", state="exited")],
         procs=[ProcInfo(pid=99, ppid=1, name="z", state="D")],
     )
     serialized = json.dumps(plan.to_dict())
     parsed = json.loads(serialized)
     assert parsed["scope"] == "project"
     assert parsed["project"] == "p"
-    assert len(parsed["actions"]) == 2  # stop + rm
+    assert len(parsed["actions"]) == 1  # rm of the leftover exited container
     assert len(parsed["d_state_processes"]) == 1

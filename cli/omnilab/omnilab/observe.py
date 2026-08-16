@@ -35,7 +35,7 @@ from typing import Any, Literal
 
 import yaml
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "1.0"
 
 
 # ---- predicate language --------------------------------------------------
@@ -258,6 +258,7 @@ class _PredicateState:
     last_true_since: float | None = None
     last_fire_at: float | None = None
     active: bool = False  # currently firing
+    first_active_at: float | None = None  # wall-clock of most recent activation
 
 
 def _step(
@@ -303,15 +304,131 @@ def _step(
 
 
 @dataclass
+class AnomalyReport:
+    """One firing anomaly with diagnostics — per spec contract."""
+
+    name: str
+    fired_at: str  # ISO-8601
+    triggering_values: dict[str, Any]
+    duration_active_s: float
+
+
+@dataclass
+class PredicateErrorReport:
+    """A per-entry evaluation error (e.g. missing key in state)."""
+
+    entry: str
+    message: str
+
+
+@dataclass
 class SpatialSummary:
+    """Output of `omnilab observe`. Schema is deliberately designed so
+    the *name* of the verdict field encodes whether visual verification
+    happened. An agent reading the JSON cannot accidentally consume a
+    numeric-only signal as if it were a verified verdict — there is no
+    field called `motion_class` to point at. See feedback_use_the_loop.md
+    and task #17 for the rationale.
+
+    verification_mode tells which of the two verdict fields is set:
+      - "verified": image was captured AND read in this same call.
+                    `verified_motion_class` is set, `numeric_motion_class`
+                    is None. This is the only mode that earns the right
+                    to make a confident physical-state claim.
+      - "numeric_only": agent skipped --capture on a live sim. The
+                    numeric signature matches X, but X is not verified.
+                    `numeric_motion_class` is set with a warning.
+      - "image_failed": capture was attempted but failed (stale PNG,
+                    service lied, renderer wedged). Treat as numeric_only
+                    + a separate diagnostic.
+      - "no_image_source": source is "example" (no live container) — there
+                    is no image to verify against. Numeric signature only.
+    """
+
     schema_version: str
     timestamp: str
-    motion_class: str | None
-    anomalies: list[str]
+    source: Literal["live", "example", "example_fallback"]
+    verification_mode: Literal[
+        "verified", "numeric_only", "image_failed", "no_image_source",
+        "calibration_failed",
+    ]
+    project: str | None
+    container: str | None
+    # Exactly one of these is set; the other is None. The agent must
+    # check verification_mode to know which to read. Field names are
+    # deliberately not "motion_class" because that name would let an
+    # agent quote it as a verdict without acknowledging verification.
+    verified_motion_class: str | None
+    numeric_motion_class: str | None
+    anomalies: list[AnomalyReport]
     state: dict[str, Any]
+    low_confidence_reason: str | None = None
+    errors: list[PredicateErrorReport] = field(default_factory=list)
+    live_status: dict[str, Any] | None = None
+    # Atomic-simultaneity calibration evidence per feedback_calibration_simultaneity.md.
+    # `verified` verification_mode REQUIRES calibration.calibrated == true
+    # AND state_sim_time_s == image_sim_time_s within tolerance.
+    calibration: dict[str, Any] | None = None
+    # Derived semantic block (observe_derived.compute_derived). Pre-cooked
+    # high-level facts an LLM agent can read directly: body height, orientation
+    # class, stationary check, motion rates, joints at limit, standing
+    # hypothesis. Inherits sim_time from the calibration block. Each
+    # field is a HYPOTHESIS — the agent must validate against the image.
+    derived: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _extract_state_atoms(tree: ast.AST) -> list[str]:
+    """Walk an AST and return all dotted state-paths it references.
+
+    Used to build `triggering_values` for fired anomalies. Returns only
+    **leaf paths** (those not a prefix of any other path) so the agent
+    sees just the values the predicate actually evaluated against, not
+    every intermediate dict on the way.
+
+    Example: predicate `joints.FR_knee.position > 0` produces a single
+    leaf `joints.FR_knee.position` — not `joints`, `joints.FR_knee`, and
+    `joints.FR_knee.position` all three.
+    """
+    raw: list[str] = []
+    seen: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            chain: list[str] = []
+            cur: ast.AST = node
+            while isinstance(cur, ast.Attribute):
+                chain.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                chain.append(cur.id)
+                path = ".".join(reversed(chain))
+                if path not in seen:
+                    raw.append(path)
+                    seen.add(path)
+        elif isinstance(node, ast.Name) and node.id not in _ALLOWED_FUNCS:
+            if node.id not in seen:
+                raw.append(node.id)
+                seen.add(node.id)
+    # Filter: keep only paths that aren't prefixes of other recorded paths.
+    leaves: list[str] = []
+    for p in raw:
+        prefix = p + "."
+        if not any(other.startswith(prefix) for other in raw):
+            leaves.append(p)
+    return leaves
+
+
+def _lookup_path(state: dict[str, Any], path: str) -> Any:
+    """Walk a dotted path into the state dict. Returns None on miss."""
+    val: Any = state
+    for k in path.split("."):
+        if isinstance(val, dict) and k in val:
+            val = val[k]
+        else:
+            return None
+    return val
 
 
 class ObserversEngine:
@@ -333,41 +450,101 @@ class ObserversEngine:
         # Pre-parse predicates so a typo fails fast.
         self._motion_trees = [(e, parse_predicate(e.when)) for e in config.motion_classes]
         self._anom_trees = [(e, parse_predicate(e.when)) for e in config.anomalies]
+        # Cache atom lists for triggering_values capture.
+        self._atoms: dict[str, list[str]] = {}
+        for e, t in (*self._motion_trees, *self._anom_trees):
+            self._atoms[e.name] = _extract_state_atoms(t)
 
-    def tick(self, state: dict[str, Any], *, now: float | None = None) -> SpatialSummary:
+    def tick(
+        self,
+        state: dict[str, Any],
+        *,
+        now: float | None = None,
+        source: Literal["live", "example", "example_fallback"] = "example",
+        verification_mode: Literal[
+            "verified", "numeric_only", "image_failed", "no_image_source",
+            "calibration_failed",
+        ] = "no_image_source",
+        low_confidence_reason: str | None = None,
+        project: str | None = None,
+        container: str | None = None,
+        live_status: dict[str, Any] | None = None,
+        calibration: dict[str, Any] | None = None,
+        derived: dict[str, Any] | None = None,
+    ) -> SpatialSummary:
         ts = now if now is not None else time.monotonic()
+        errors: list[PredicateErrorReport] = []
 
         motion_class: str | None = None
         # First-match wins for motion_classes (definitions are ordered).
         for entry, tree in self._motion_trees:
             try:
                 raw = bool(evaluate(tree, state))
-            except PredicateError:
+            except (PredicateError, TypeError) as e:
                 raw = False
+                errors.append(PredicateErrorReport(entry=entry.name, message=str(e)))
             firing = _step(
                 entry, self._motion_state[entry.name], raw=raw, now=ts
             )
             if firing and motion_class is None:
                 motion_class = entry.name
 
-        anomalies: list[str] = []
+        anomalies: list[AnomalyReport] = []
+        wall_now = dt.datetime.now(dt.UTC)
         for entry, tree in self._anom_trees:
             try:
                 raw = bool(evaluate(tree, state))
-            except PredicateError:
+            except (PredicateError, TypeError) as e:
                 raw = False
-            firing = _step(
-                entry, self._anom_state[entry.name], raw=raw, now=ts
-            )
+                errors.append(PredicateErrorReport(entry=entry.name, message=str(e)))
+            ps = self._anom_state[entry.name]
+            was_active = ps.active
+            firing = _step(entry, ps, raw=raw, now=ts)
             if firing:
-                anomalies.append(entry.name)
+                if not was_active or ps.first_active_at is None:
+                    ps.first_active_at = ts
+                duration = ts - (ps.first_active_at or ts)
+                # Triggering values: every atom the predicate referenced,
+                # resolved against the current state.
+                tv = {p: _lookup_path(state, p) for p in self._atoms.get(entry.name, [])}
+                anomalies.append(
+                    AnomalyReport(
+                        name=entry.name,
+                        fired_at=wall_now.isoformat(),
+                        triggering_values=tv,
+                        duration_active_s=duration,
+                    )
+                )
+            else:
+                ps.first_active_at = None
+
+        mc_label = motion_class or "unclassified"
+        # Route the motion_class signal into the right field based on
+        # verification_mode. Schema-enforced: agents can't accidentally
+        # read an unverified verdict as if it were verified.
+        verified_mc: str | None = None
+        numeric_mc: str | None = None
+        if verification_mode == "verified":
+            verified_mc = mc_label
+        else:
+            numeric_mc = mc_label
 
         return SpatialSummary(
             schema_version=SCHEMA_VERSION,
-            timestamp=dt.datetime.now(dt.UTC).isoformat(),
-            motion_class=motion_class,
+            timestamp=wall_now.isoformat(),
+            source=source,
+            verification_mode=verification_mode,
+            project=project,
+            container=container,
+            verified_motion_class=verified_mc,
+            numeric_motion_class=numeric_mc,
             anomalies=anomalies,
-            state=dict(state),  # echo so the agent can introspect
+            state=dict(state),
+            low_confidence_reason=low_confidence_reason,
+            errors=errors,
+            live_status=live_status,
+            calibration=calibration,
+            derived=derived,
         )
 
 

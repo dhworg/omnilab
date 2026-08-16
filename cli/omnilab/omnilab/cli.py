@@ -165,10 +165,48 @@ def up(
             container=manifest.name,
             stderr=result.stderr,
         )
+
+    # Ensure Wayland-Qt deps are present in the container so Gazebo's
+    # GUI doesn't crash on first launch. Project image SHOULD ship
+    # these (Phase B.5+ — file as ros-jazzy-gz-harmonic Dockerfile
+    # change). Idempotent: skips if already installed.
+    _ensure_wayland_qt_deps(manifest.name)
+
     _output.emit(
         human=f"Container '{manifest.name}' is up.",
         data={"container": manifest.name, "status": "started", "gpu": ctx.gpu},
     )
+
+
+def _ensure_wayland_qt_deps(container_name: str) -> None:
+    """Install qtwayland5 + wayland-utils inside the container if missing.
+    Apt-installed packages don't survive container recreate, so this
+    runs on every `omnilab up`. The proper fix is baking them into the
+    project image; this is the bridge until that lands.
+    """
+    import subprocess
+
+    check = subprocess.run(
+        ["podman", "exec", container_name, "bash", "-c",
+         "dpkg -l qtwayland5 2>/dev/null | grep -q '^ii'"],
+        capture_output=True, text=True, check=False,
+    )
+    if check.returncode == 0:
+        return  # Already installed.
+    _output.emit(human="Installing Wayland-Qt deps in container (one-time)…")
+    install = subprocess.run(
+        ["podman", "exec", "-u", "0", container_name, "bash", "-c",
+         "apt-get update -qq && apt-get install -y -qq "
+         "qtwayland5 wayland-utils > /tmp/.apt.log 2>&1"],
+        capture_output=True, text=True, check=False,
+    )
+    if install.returncode != 0:
+        _output.emit(
+            human=(
+                f"warning: failed to install Wayland deps "
+                f"(see /tmp/.apt.log inside container): rc={install.returncode}"
+            ),
+        )
 
 
 @app.command()
@@ -347,18 +385,47 @@ def observe(
     project_dir: Path = typer.Option(
         Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
     ),
-    capture: bool = typer.Option(
-        False, "--capture", help="Layer 2: capture annotated frames during the window."
+    no_capture: bool = typer.Option(
+        False, "--no-capture",
+        help="DEBUGGING ONLY: skip the Layer 2 screenshot. The output's "
+             "motion_class will be moved to `numeric_motion_class` with "
+             "`verification_mode: \"numeric_only\"`. Numeric signatures "
+             "can match physical states that aren't actually true (a bot "
+             "wedged sideways with jammed knees reads the same as a "
+             "standing bot). Always pair observe with the screenshot on "
+             "a live sim for any claim about robot physical state.",
     ),
     duration: float = typer.Option(
-        2.0, "--duration", help="Capture window length in seconds."
+        2.0, "--duration", help="Frame capture window length in seconds."
     ),
-    fps: int = typer.Option(10, "--fps", help="Frame rate for --capture."),
+    fps: int = typer.Option(10, "--fps", help="Frame rate for capture."),
     validate: Path | None = typer.Option(
         None, "--validate", help="Lint an observers.yaml; do not collect state."
     ),
 ) -> None:
-    """Agent perception primitive — Layer 1 spatial summary, Layer 2 frame capture."""
+    """Agent perception primitive — Layer 1 spatial summary + Layer 2 visual.
+
+    ⚠ DANGER ⚠ — Numeric-only verdicts are unverified.
+
+    Against a live sim, this command captures BOTH the numeric ROS
+    state AND a screenshot of Gazebo, then evaluates predicates. The
+    JSON output's verdict field is named based on whether the visual
+    was actually verified:
+
+      - `verified_motion_class` — image was captured AND fresh. Safe
+        for an agent to quote as a claim about the robot's physical
+        state.
+      - `numeric_motion_class` — image was skipped (--no-capture) or
+        failed to write. The signature matches a class but no visual
+        cross-check happened. Do NOT quote this as a claim about the
+        robot; it can match "robot standing" while the robot is
+        actually wedged at an angle, buried in mesh, or off-camera.
+
+    The default is --capture on. --no-capture is for debugging the
+    predicate engine itself, not for normal observation.
+    """
+    # Cross-modal verification is on by default; --no-capture opts out.
+    capture: bool = not no_capture
     from . import observe as obs
 
     if validate is not None:
@@ -376,6 +443,37 @@ def observe(
         _output.emit(human="observers.yaml is clean.", data={"issues": []})
         return
 
+    # Project-presence detection. When there's no omnilab.yaml here, the
+    # spec contract (verification #1) says: source=example, canned state,
+    # empty observers, exit 0 — agent still gets a valid snapshot.
+    manifest_path = project_dir / "omnilab.yaml"
+    if not manifest_path.exists():
+        import sys
+        print(
+            f"warning: no omnilab.yaml in {project_dir} — using example "
+            "state with no observers (agent gets a baseline snapshot)",
+            file=sys.stderr,
+        )
+        empty_config = obs.ObserversConfig()
+        engine = obs.ObserversEngine(empty_config)
+        summary = engine.tick(
+            obs.example_quadruped_state(),
+            source="example",
+            verification_mode="no_image_source",
+            low_confidence_reason="No project / no live container / canned example state.",
+            project=None,
+            container=None,
+        )
+        _output.emit(
+            human=(
+                f"source:       {summary.source}\n"
+                f"numeric_motion_class:   {summary.numeric_motion_class}  (⚠ {summary.verification_mode})\n"
+                f"anomalies:    {', '.join(a.name for a in summary.anomalies) or '—'}"
+            ),
+            data=summary.to_dict(),
+        )
+        return
+
     manifest = _load_manifest(project_dir)
     if manifest.observers is None:
         _output.emit_error(
@@ -389,32 +487,219 @@ def observe(
     config = obs.ObserversConfig.from_yaml(observers_path.read_text())
     engine = obs.ObserversEngine(config)
 
-    # v0 uses the example state when no live container is up so the
-    # snapshot still demos the predicate engine. When a container is
-    # running, future versions will pull live state from
-    # PodmanExecSources (Phase B.future).
-    state = obs.example_quadruped_state()
-    summary = engine.tick(state)
+    # Try live state from the project's running container first; fall
+    # back to canned example state when no container is up (spec
+    # behavior contract #3) or exit 3 on broken container state (#4).
+    from . import observe_sources as srcs
+
+    container_name = manifest.name
+    src = srcs.LiveStateSource(container_name)
+    status = src.status()
+
+    state: dict
+    source_label: str = "example"
+    live_status_payload: dict | None = None
+    pre_capture_result = None
+
+    calibration_payload: dict | None = None
+    if status.state == "running":
+        if capture:
+            # Apply world-frame camera framing once before the first
+            # capture of this session (task #22 — option B). Camera
+            # position + look-at are absolute in world frame, so the
+            # framing is unambiguous regardless of how the spawned
+            # entity is rotated.
+            from . import observe_derived as _derived_mod
+            _cam_cfg = _derived_mod.DerivedConfig.load(project_dir)
+            if _cam_cfg.camera_world_position_xyz:
+                src.apply_camera_pose(
+                    _cam_cfg.camera_world_position_xyz,
+                    _cam_cfg.camera_look_at_xyz,
+                )
+
+            # Atomic pause-capture-resume — state and image MUST come
+            # from the same simulator instant (feedback_calibration_simultaneity.md).
+            # No more "screenshot first then state later" — that was the
+            # bug class that let me conflate a freefall-screenshot with
+            # a settled-numbers reading. Now they're locked together.
+            host_capture_dir = project_dir / ".omnilab" / "captures"
+            cal = src.calibrated_sample(host_capture_dir)
+            sample = cal.state_result
+            pre_capture_result = cal.capture_result
+            calibration_payload = {
+                "method": cal.calibration_method,
+                "calibrated": cal.calibrated,
+                "state_sim_time_s": cal.state_sim_time_s,
+                "image_sim_time_s": cal.image_sim_time_s,
+                "sim_time_skew_s": cal.sim_time_skew_s,
+                "error": cal.calibration_error,
+            }
+        else:
+            # --no-capture path: still use the legacy non-paused sample
+            # since there's no image to align to.
+            sample = src.sample()
+
+        state = sample.state
+        source_label = "live"
+        live_status_payload = {
+            "container": container_name,
+            "topics_seen": sample.topics_seen,
+            "topics_missing": sample.topics_missing,
+            "collect_window_seconds": sample.collect_window_seconds,
+            "state_sample_started_at": sample.state_sample_started_at,
+            "state_sample_ended_at": sample.state_sample_ended_at,
+        }
+        if sample.raw_error:
+            # Live source returned but errored mid-collection.
+            live_status_payload["raw_error"] = sample.raw_error
+            # Still proceed with whatever state we got (might be empty).
+    elif status.state == "missing":
+        # No container for this project — fall back to example state.
+        import sys
+        print(
+            f"warning: no running container for project '{container_name}' — "
+            "using example state (run `omnilab up` to use live data)",
+            file=sys.stderr,
+        )
+        state = obs.example_quadruped_state()
+        source_label = "example"
+    else:
+        # exited / paused / created / unknown / etc. — error per contract #4.
+        _output.emit_error(
+            f"container '{container_name}' is in state '{status.state}' "
+            f"(expected 'running' or 'missing'). "
+            f"Run `omnilab clean -d {project_dir} --yes` and `omnilab up -d {project_dir}` to reset.",
+            code=3,
+        )
+        return  # _output.emit_error raises typer.Exit; this is just for type-checker
+
+    # Determine verification_mode. The bar for "verified" is now
+    # atomic simultaneity (feedback_calibration_simultaneity.md):
+    # state and image must come from the same simulator instant. A
+    # successful capture isn't enough on its own anymore.
+    verification_mode: str
+    low_confidence_reason: str | None = None
+    if source_label == "example":
+        verification_mode = "no_image_source"
+        low_confidence_reason = (
+            "Source is canned example state — no live image exists to verify "
+            "against. Verdict is informational only."
+        )
+    elif not capture:
+        verification_mode = "numeric_only"
+        low_confidence_reason = (
+            "--no-capture was passed. The numeric signature matches a class "
+            "but no visual cross-check happened. Numeric signatures can fire "
+            "spuriously (bot wedged sideways, body in mesh, off-camera). Do "
+            "NOT quote this verdict as a claim about robot physical state."
+        )
+    elif pre_capture_result is None or pre_capture_result.frame_path is None:
+        # We tried to capture but it failed (stale PNG, service lied, etc.)
+        verification_mode = "image_failed"
+        err = pre_capture_result.error if pre_capture_result else "no result"
+        low_confidence_reason = (
+            f"Screenshot capture failed: {err}. Numeric signature is "
+            "available but unverified. Restart gz GUI or use the rescue "
+            "path in CLAUDE.md before trusting this verdict."
+        )
+    elif calibration_payload is None or not calibration_payload.get("calibrated", False):
+        # Image captured, but state and image are NOT from the same
+        # simulator instant. Per feedback_calibration_simultaneity.md,
+        # this means the derived class is unverified — the image is of
+        # one moment, the numbers are of another.
+        verification_mode = "calibration_failed"
+        cal_err = (calibration_payload or {}).get("error") or "unknown"
+        skew = (calibration_payload or {}).get("sim_time_skew_s")
+        skew_ms = f"{skew*1000:.1f}ms" if isinstance(skew, (int, float)) else "?"
+        low_confidence_reason = (
+            f"Calibration failed: image and state sim_times diverged "
+            f"(skew={skew_ms}). Reason: {cal_err}. The image and the "
+            "state numbers describe different physical instants; no "
+            "derived class can be verified against the screenshot."
+        )
+    else:
+        verification_mode = "verified"
+
+    # Compute the derived semantic layer if we have live state. Inherits
+    # the calibrated sample's sim_time so derived fields are tied to the
+    # same physical instant as state+image (see observe_derived.py).
+    derived_payload: dict | None = None
+    if source_label == "live":
+        from . import observe_derived as derived_mod
+
+        derived_cfg = derived_mod.DerivedConfig.load(project_dir)
+        sim_t = (calibration_payload or {}).get("state_sim_time_s")
+        history = derived_mod.read_recent_history(project_dir, n=2)
+        derived_payload = derived_mod.compute_derived(
+            state, derived_cfg, sim_time_s=sim_t, history=history,
+        )
+
+        # Append THIS sample to history for future motion-rate computations.
+        # Only persist if calibration was good — don't pollute history
+        # with un-trustworthy samples.
+        if calibration_payload and calibration_payload.get("calibrated"):
+            record = derived_mod.build_history_record(
+                sim_time_s=sim_t,
+                state=state,
+                image_path=(pre_capture_result.frame_path
+                            if pre_capture_result else None),
+                verification_mode=verification_mode,
+            )
+            try:
+                derived_mod.append_history(project_dir, record)
+            except OSError:
+                # History persistence is best-effort; never fail observe on it.
+                pass
+
+    summary = engine.tick(
+        state,
+        source=source_label,  # type: ignore[arg-type]
+        verification_mode=verification_mode,  # type: ignore[arg-type]
+        low_confidence_reason=low_confidence_reason,
+        project=manifest.name,
+        container=container_name if source_label == "live" else None,
+        live_status=live_status_payload,
+        calibration=calibration_payload,
+        derived=derived_payload,
+    )
 
     capture_payload: dict | None = None
     if capture:
-        plan = obs.plan_capture(
-            output_dir=project_dir / ".omnilab" / "captures",
-            duration_seconds=duration,
-            fps=fps,
-        )
-        capture_payload = {
-            "output_dir": str(plan.output_dir),
-            "duration_seconds": plan.duration_seconds,
-            "fps": plan.fps,
-            "expected_frames": plan.expected_frames,
-            "gz_cmd": plan.gz_cmd,
-        }
+        # Real Layer 2: a multimodal agent can Read the PNG and "see"
+        # the scene. Catches failure modes pure-numeric observe misses
+        # (freefall, mesh penetration, off-camera, etc.).
+        # We took the screenshot BEFORE sample() so its timestamp lines
+        # up with the start of the state collection window. The
+        # captured_at + state_sample_started_at lets the agent verify
+        # they're from the same physical moment.
+        if pre_capture_result is not None:
+            capture_payload = {
+                "frame_path": pre_capture_result.frame_path,
+                "captured_at": pre_capture_result.captured_at,
+                "error": pre_capture_result.error,
+            }
+        else:
+            capture_payload = {
+                "frame_path": None,
+                "captured_at": None,
+                "error": "no live container; --capture requires running sim",
+            }
 
+    # In human-readable output, name the verdict field after its
+    # verification status so a human reading the CLI doesn't make the
+    # same mistake the JSON schema is designed to prevent.
+    if summary.verification_mode == "verified":
+        verdict_line = f"motion_class:           {summary.verified_motion_class}  (verified)"
+    else:
+        verdict_line = (
+            f"numeric_motion_class:   {summary.numeric_motion_class}  "
+            f"(⚠ {summary.verification_mode})"
+        )
     _output.emit(
         human=(
-            f"motion_class: {summary.motion_class or '—'}\n"
-            f"anomalies:    {', '.join(summary.anomalies) or '—'}"
+            f"source:       {summary.source}\n"
+            f"{verdict_line}\n"
+            f"anomalies:    {', '.join(a.name for a in summary.anomalies) or '—'}"
         ),
         data={
             **summary.to_dict(),
@@ -803,6 +1088,15 @@ def clean(
 
     procs = cleanmod.read_proc_snapshot()
     containers = cleanmod.read_container_snapshot()
+    # For each RUNNING in-scope container, also read its inside-process
+    # list so the planner can detect duplicate sim processes. Fixes the
+    # "omnilab clean says nothing to clean while two gz sims are
+    # visibly running" bug (task #21).
+    for c in containers:
+        if c.state == "running" and (
+            all_projects or c.project == project
+        ):
+            c.inside_procs = cleanmod.read_inside_container_procs(c.name)
     plan = cleanmod.plan_cleanup(
         project=project,
         containers=containers,
@@ -934,9 +1228,28 @@ def doctor(  # noqa: PLR0912, PLR0915
     # --- image ---
     if manifest is not None:
         if has_podman():
+            # podman manifest inspect works for multi-arch manifest lists
+            # but errors on single-arch images with "Treating single
+            # images as manifest lists is not implemented" — which means
+            # the image IS pullable, just not a manifest list. Fall back
+            # to `podman image inspect` (locally available = pullable).
             rc = run(["podman", "manifest", "inspect", manifest.image])
             ok = rc.returncode == 0
-            detail = "manifest fetched" if ok else (rc.stderr.strip().splitlines() or [""])[0]
+            detail = "manifest fetched"
+            if not ok:
+                if "single images as manifest lists" in (rc.stderr or ""):
+                    # Single-arch image, locally pulled. Check that.
+                    rc_local = run(["podman", "image", "inspect", manifest.image])
+                    ok = rc_local.returncode == 0
+                    detail = (
+                        "single-arch image, locally available"
+                        if ok else "single-arch image, not pulled locally"
+                    )
+                else:
+                    # Other error — truncate stderr to avoid 200-line dumps.
+                    first_line = (rc.stderr or "").strip().splitlines()
+                    msg = first_line[0] if first_line else "unknown error"
+                    detail = msg[:120] + ("…" if len(msg) > 120 else "")
             add(f"image '{manifest.image}' pullable", ok, detail)
         else:
             add("image reachability", False, "skipped (no podman)")

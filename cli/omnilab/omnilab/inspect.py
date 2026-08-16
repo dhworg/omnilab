@@ -40,7 +40,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "1.0"
 
 
 # ---- data model ----------------------------------------------------------
