@@ -21,17 +21,16 @@
 # against the qcow2 in a VM.
 name: build-host-iso
 
+# Architecture rev 5: the bootc host is a v2 appliance deliverable, not part
+# of v1. This workflow is therefore MANUAL ONLY — it must not gate v1 PRs.
+#
+# It is also currently RED, and not from anything in this repo: the
+# Containerfile is unchanged since it last built green on 2026-05-20, but it
+# installs from live Fedora 42 repos, so upstream drift has made the GNOME
+# extension set unsatisfiable under --setopt=install_weak_deps=False
+# (libgdk_pixbuf, libgraphene, liblcms2, libasound). Fixing that is v2 work;
+# pinning the package set is the real answer when the appliance path resumes.
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-    paths:
-      - 'host/**'
-      - '.github/workflows/build-host-iso.yml'
-  pull_request:
-    paths:
-      - 'host/**'
-      - '.github/workflows/build-host-iso.yml'
   workflow_dispatch:
     inputs:
       variant:
