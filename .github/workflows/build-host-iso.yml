@@ -12,11 +12,10 @@
 #                           main, PRs, tags, and unspecified
 #                           workflow_dispatch.
 #
-#   dev                     bootc-image-builder gets host/config.toml.dev
-#                           so the ISO auto-installs with placeholder
-#                           credentials. Fast iteration in a VM only.
-#                           Triggered explicitly via workflow_dispatch
-#                           with variant=dev.
+# The `dev` auto-install variant was REMOVED in architecture rev 5: it
+# wiped the target disk and carried baked credentials, and its only purpose
+# was fast VM iteration on the host image, which is no longer on the
+# critical path. v1 publishes no ISO artifacts at all.
 #
 # Phase B.6 will add smoke-tests.yml that runs the seven smoke tests
 # against the qcow2 in a VM.
@@ -36,11 +35,10 @@ on:
   workflow_dispatch:
     inputs:
       variant:
-        description: 'ISO variant — interactive (production, no baked credentials) or dev (auto-install for VM iteration).'
+        description: 'ISO variant — interactive only (the dev auto-install variant was removed in rev 5).'
         type: choice
         options:
           - interactive
-          - dev
         default: interactive
 
 env:
@@ -80,13 +78,11 @@ jobs:
               echo "Anaconda will run its full UI. NO baked credentials."
               ;;
             dev)
-              echo "WARNING: dev variant — ISO auto-installs with placeholder"
-              echo "credentials from host/config.toml.dev. NOT for shareable"
-              echo "or physical-machine builds."
-              if [ ! -f host/config.toml.dev ]; then
-                echo "ERROR: host/config.toml.dev not found." >&2
-                exit 1
-              fi
+              echo "ERROR: the dev ISO variant was removed in architecture rev 5." >&2
+              echo "It auto-installed (wiping the target disk) and carried baked" >&2
+              echo "credentials. Its only purpose was fast VM iteration on the host" >&2
+              echo "image, which is no longer on the critical path." >&2
+              exit 1
               ;;
             *)
               echo "ERROR: unknown variant '$VARIANT'." >&2
@@ -139,19 +135,10 @@ jobs:
             --volume /var/lib/containers/storage:/var/lib/containers/storage
           )
 
-          # Mount the variant-specific config.toml. Both variants pass
-          # one — without it, bootc-image-builder embeds an autoinstall
-          # kickstart that wipes the only disk and skips user creation.
-          #   interactive → host/config.toml      (unattended=false:
-          #                                        Anaconda runs full UI,
-          #                                        user creates account)
-          #   dev         → host/config.toml.dev  (pre-baked creds for
-          #                                        VM auto-install)
-          if [ "$VARIANT" = "dev" ]; then
-            VOLUMES+=(--volume "$PWD/host/config.toml.dev:/config.toml:ro")
-          else
-            VOLUMES+=(--volume "$PWD/host/config.toml:/config.toml:ro")
-          fi
+          # config.toml is mandatory: without it bootc-image-builder embeds
+          # an autoinstall kickstart that wipes the only disk and skips user
+          # creation. `unattended = false` is what keeps Anaconda interactive.
+          VOLUMES+=(--volume "$PWD/host/config.toml:/config.toml:ro")
 
           sudo podman run --rm \
             --privileged \
@@ -164,10 +151,11 @@ jobs:
           echo "--- output tree ---"
           find output -type f -printf '%p  %s bytes\n'
 
-      - name: Upload ISO artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: omnilab-host-iso-${{ env.VARIANT }}
-          path: output/**/*.iso
-          retention-days: 14
-          if-no-files-found: error
+      # Architecture rev 5: v1 publishes NO ISO artifacts. The host image
+      # still builds so the v2 appliance path stays alive, but nothing
+      # downloadable is produced — an ISO that cannot dual-boot should not
+      # be sitting in the artifacts list waiting to erase someone's disk.
+      - name: Report ISO build (not published)
+        run: |
+          echo "ISO built for verification only; not uploaded (rev 5)."
+          find output -type f -name '*.iso' -printf '%p  %s bytes\n' || true
