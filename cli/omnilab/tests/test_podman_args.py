@@ -57,12 +57,32 @@ def test_wayland_socket_mounted_when_present():
     ctx = _ctx(wayland="/run/user/1000/wayland-0")
     args = build_run_args(_manifest(), ctx)
     assert "/run/user/1000/wayland-0:/tmp/wayland-0" in args
-    assert "WAYLAND_DISPLAY=/tmp/wayland-0" in args
+    # Qt resolves WAYLAND_DISPLAY relative to XDG_RUNTIME_DIR, so the bare
+    # socket name is correct here — with XDG_RUNTIME_DIR=/tmp it resolves to
+    # /tmp/wayland-0. Passing the full path would double the prefix.
+    assert "WAYLAND_DISPLAY=wayland-0" in args
+    assert "XDG_RUNTIME_DIR=/tmp" in args
 
 
 def test_wayland_skipped_when_absent():
     args = build_run_args(_manifest(), _ctx(wayland=None))
     assert not any("wayland-0" in a for a in args)
+
+
+def test_nvidia_sets_prime_render_offload():
+    """Passthrough alone leaves Gazebo on the iGPU/llvmpipe on every hybrid
+    laptop. The PRIME variables are what actually route rendering to the dGPU.
+    """
+    from omnilab.gpu_doctor import PRIME_ENV
+
+    args = build_run_args(_manifest(), _ctx(gpu="nvidia"))
+    for key, value in PRIME_ENV.items():
+        assert f"{key}={value}" in args
+
+
+def test_igpu_does_not_set_prime_offload():
+    args = build_run_args(_manifest(), _ctx(gpu="igpu"))
+    assert not any("PRIME_RENDER_OFFLOAD" in a for a in args)
 
 
 def test_rmw_and_domain_passed_via_env():
@@ -81,7 +101,8 @@ def test_custom_rmw_propagates():
 def test_project_dir_mounted_at_workspace():
     ctx = _ctx(project_dir=Path("/home/parth/projects/foo"))
     args = build_run_args(_manifest(), ctx)
-    assert "/home/parth/projects/foo:/workspace" in args
+    # `:Z` triggers the SELinux relabel that an enforcing Fedora host needs.
+    assert "/home/parth/projects/foo:/workspace:Z" in args
     assert "-w" in args
     assert args[args.index("-w") + 1] == "/workspace"
 

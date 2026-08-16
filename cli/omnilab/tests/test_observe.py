@@ -203,7 +203,11 @@ def test_engine_classifies_walking_quadruped():
     config = ObserversConfig.from_yaml(text)
     engine = ObserversEngine(config)
     summary = engine.tick(example_quadruped_state(walking=True))
-    assert summary.motion_class == "walking_forward"
+    # No image was captured, so the verdict is a numeric signature only —
+    # `verified_motion_class` stays None by design so an agent can't quote
+    # an unverified classification as a verified one.
+    assert summary.numeric_motion_class == "walking_forward"
+    assert summary.verified_motion_class is None
     assert summary.anomalies == []
 
 
@@ -219,7 +223,8 @@ def test_engine_classifies_standing_quadruped():
     )
     engine = ObserversEngine(ObserversConfig.from_yaml(text))
     summary = engine.tick(example_quadruped_state(walking=False))
-    assert summary.motion_class == "standing"
+    assert summary.numeric_motion_class == "standing"
+    assert summary.verified_motion_class is None
 
 
 def test_engine_anomaly_fires_then_cools_down():
@@ -235,19 +240,26 @@ def test_engine_anomaly_fires_then_cools_down():
     fast = {"foot": {"in_contact": True, "lateral_velocity": 0.5}}
     slow = {"foot": {"in_contact": True, "lateral_velocity": 0.0}}
 
+    # `anomalies` holds AnomalyReport records (name + fired_at + the values
+    # that triggered it), not bare strings — agents need the evidence.
+    def names(summary) -> set[str]:
+        return {a.name for a in summary.anomalies}
+
     s1 = engine.tick(fast, now=0.0)
-    assert "slip" in s1.anomalies
+    assert "slip" in names(s1)
+    fired = next(a for a in s1.anomalies if a.name == "slip")
+    assert fired.triggering_values == {"foot.lateral_velocity": 0.5}
 
     # Goes inactive — cooldown clock starts.
     engine.tick(slow, now=0.5)
 
     # Cooldown blocks re-fire.
     s_block = engine.tick(fast, now=0.7)
-    assert "slip" not in s_block.anomalies
+    assert "slip" not in names(s_block)
 
     # Past cooldown.
     s_again = engine.tick(fast, now=2.0)
-    assert "slip" in s_again.anomalies
+    assert "slip" in names(s_again)
 
 
 # ---- validator ----------------------------------------------------------

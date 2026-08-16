@@ -1,72 +1,61 @@
 # OmniLab — Claude Code session bootstrap
 
 Read this first. Then [`project-spec-v1.md`](./project-spec-v1.md) for the
-full architecture and scope (architecture rev 4 as of 2026-05-14 — desktop
-swapped KDE Plasma 6 → GNOME; see the amendment block at the top of the spec).
+full architecture and scope (**architecture rev 5 as of 2026-08-16 —
+container-first delivery**; see the amendment block at the top of the spec).
 
 ## Project summary
 
-OmniLab is a bootc-based immutable Linux OS + CLI giving ROS 2 + Gazebo
-developers a zero-setup, dependency-hell-proof environment for sim and
-hardware work. It's also the first Linux OS where AI agents can perceive,
-act on, and verify robot state via a built-in agent-perception primitive
-(`omnilab observe`). Beachhead: e-Yantra teams (~6000 participants/year).
-v1 deliverable: bootable interactive ISO that turns a fresh laptop into a
-working sim + hardware dev environment in 15 minutes.
+OmniLab is a container + CLI giving ROS 2 + Gazebo developers a
+zero-setup, dependency-hell-proof environment for sim and hardware work
+**on the Linux machine they already have**. It's also where AI agents can
+perceive, act on, and verify robot state via a built-in agent-perception
+primitive (`omnilab observe`). Beachhead: e-Yantra teams (~6000
+participants/year). v1 deliverable: one-command install that turns an
+existing Linux laptop into a working sim + hardware dev environment in 15
+minutes, **without touching the user's disk layout**.
+
+**Why not the ISO (rev 5, 2026-08-16):** bootc is a whole-machine model and
+cannot dual-boot — the ISO erased the author's disk. That's structural, not a
+hardening bug. The bootc host, ISO, and qcow2 are deferred to v2 as an
+optional appliance. Accepted cost: a container can't ship a kernel driver, so
+the NVIDIA driver + container-toolkit is now a documented prerequisite that
+`omnilab gpu` diagnoses and repairs rather than something we own.
 
 ## Current phase
 
-**Phase A — Bootstrap: DONE.** Repo scaffold + `build-host-iso.yml` CI;
-first ISO built and bootc loop verified end-to-end.
+**Phase A — Bootstrap: DONE.** (bootc/ISO work retained for the v2 appliance.)
 
-**Phase B — Core layers (B.4 in progress):**
-- ✅ **B.1**: Host swapped to KDE Plasma 6 on Wayland *(superseded — see B.1b)*
-- 🆕 **B.1b** (2026-05-14): Desktop swapped to **GNOME** on Wayland per
-  spec amendment. Figma reference was GNOME-shaped (Activities-style brand
-  left, clock center, indicators right, drop-down notification panel,
-  Dash-to-Dock bottom). Plasma was being forced into that. Also: KWin
-  segfaulted on a kwinrc entry enabling a non-existent effect plugin →
-  Plasma login loop, ~6h to diagnose. GNOME's Wayland + NVIDIA Optimus
-  story is also better. NVIDIA layer carries forward (DE-agnostic).
-- ✅ **B.2**: `ros-jazzy-gz-harmonic` project image built, on GHCR
-- ✅ **B.3**: `omnilab` CLI v0 (5 commands: `new`, `up`, `down`, `sim`,
-  `doctor`) with 40 unit tests, two-Python-version CI matrix
-- ✅ **B.4 DONE** — spec architecture rev 3:
-  - ✅ Switched ISO to interactive install (default; opt-in `dev` variant
-    via `workflow_dispatch` with `host/config.toml.dev`)
-  - ✅ CLI conventions infra (`--json`, `--dry-run`, `--yes`, documented
-    exit codes 0..5; `docs/cli-conventions.md`)
-  - ✅ Seven new commands shipped: `inspect`, `clean`, `record`/`replay`,
-    `pair init/join/status`, `template list/show/install`, `observe`,
-    `tune`. All honor dual-mode + destructive-safety conventions.
-  - ✅ Three foundational templates: `nav2-base`, `micro-ros-blink`,
-    `quadruped-walker` (with observers.yaml). 3 `docs/examples/observers/`
-    YAMLs (quadruped, mobile_2d, arm_6dof).
-  - ✅ Agent-loop smoke test (`tests/test_agent_loop.py`) wired into
-    `smoke-tests.yml` workflow.
-  - ✅ `omnilab doctor --full` for extended health checks.
-  - 234 → 240+ unit tests, two Python versions in CI.
-- ⏳ **B.5 NEXT**: Host hardening — udev rules, group memberships,
-  NVIDIA stack, branding (fastfetch, fonts, wallpapers, GNOME theming
-  via extensions + GTK + dconf preset)
-- ⏸ **B.6**: Full smoke-test matrix in CI (Gazebo headless on
-  self-hosted dGPU runner)
+**Phase B — Core layers (B.1–B.4 DONE; B.5 replaced by rev 5):**
+- ✅ **B.2**: `ros-jazzy-gz-harmonic` project image on GHCR
+- ✅ **B.3 / B.4**: full CLI surface — `new`, `up`, `down`, `sim`, `doctor`,
+  `inspect`, `clean`, `record`/`replay`, `pair`, `template`, `observe`, `tune`
+- 🆕 **B.5′ — Host portability (REPLACES host hardening), IN PROGRESS:**
+  - ✅ `omnilab gpu` — NVIDIA diagnosis + repair; TUI + `--json` + `--fix`
+  - ✅ PRIME render offload in `omnilab up` (passthrough alone left Gazebo on
+    llvmpipe on every hybrid laptop)
+  - ✅ `omnilab pair` wiring fixed — `CYCLONEDDS_URI` set + `PairConfig`
+    persisted, so the container actually starts on the paired domain
+  - ✅ `install.sh` one-command installer
+  - ⏸ `podman.py` host-distro portability — `label=disable`, `:Z`,
+    `--userns keep-id` are Fedora/bootc-shaped; need Ubuntu/AppArmor handling
+  - ⏸ udev + `dialout` as `doctor --host` guidance
+- 🔄 **B.6**: smoke matrix retargeted to container-on-host-distro
 
-**Phase C — Verification (gates v1 release):** NVIDIA tier, hardware
-verification, agent-loop verification.
+**Phase C — Verification (gates v1):** NVIDIA tier across host distros,
+hardware verification, agent-loop verification.
 
-**Phase D — Polish:** `llm-log-analyzer` skill-pack, mkdocs docs site,
-GNOME theming for the Figma-inspired aesthetic (Dash-to-Dock + Blur My
-Shell + libadwaita accent + dconf preset).
+**Phase D — Polish:** `llm-log-analyzer`, mkdocs site (install chapter
+rewritten for the container path). GNOME theming deferred to v2.
 
 See `project-spec-v1.md` § "Phase status" for the up-to-date breakdown.
 
 ## Architecture (3 layers + 1 pillar)
 
-1. **Host (`omnilab-host`)** — Fedora bootc 42 OCI image, atomic updates
-   via `bootc upgrade`. Contains kernel, GNOME on Wayland (gdm + gnome-shell),
-   Podman + nvidia-container-toolkit, GPU drivers, udev rules, the `omnilab`
-   CLI. No ROS.
+1. **Host** — the user's own Linux distro (Ubuntu 22.04+, Fedora 40+,
+   Arch). OmniLab supplies the CLI via `install.sh` and diagnoses host
+   prerequisites; it does not own the kernel, desktop, or GPU driver.
+   *(`omnilab-host` bootc image deferred to v2 — see rev 5.)*
 2. **Project images (`omnilab-projects`)** — OCI images with pinned
    ROS 2 Jazzy + Gazebo Harmonic + ros-gz + firmware tools. Referenced
    by SHA256 digest in `omnilab.yaml`. This is the dep-hell cure.
@@ -137,13 +126,13 @@ The CLI is the agent API. Every command honors:
 
 | Component | Choice |
 |---|---|
-| Host base | Fedora bootc 42 |
+| Host | User's existing Linux distro (Linux only in v1) |
 | Image format | OCI via GHCR |
-| ISO/qcow2 build tool | `bootc-image-builder` |
+| ISO/qcow2 build tool | `bootc-image-builder` (v2 appliance only) |
 | Project base | Ubuntu 24.04 |
 | ROS 2 | Jazzy Jalisco (LTS to May 2029) |
 | Simulator | Gazebo Harmonic (LTS to Sep 2028) |
-| Desktop | GNOME on Wayland (gdm + gnome-shell) |
+| Desktop | n/a in v1 (GNOME deferred to the v2 appliance) |
 | Container runtime | Podman + nvidia-container-toolkit |
 | GPU tiers | iGPU (Intel/AMD) baseline; NVIDIA proprietary tier |
 | CLI language | Python (Typer + Rich/Textual for TUIs) |
