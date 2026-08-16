@@ -19,16 +19,24 @@ curl -fsSL https://raw.githubusercontent.com/dhworg/omnilab/main/install.sh | ba
 ```
 
 That's it. The installer **never partitions, formats, or otherwise touches
-your disk layout**, and never runs `sudo` without asking first.
+your disk layout**, and never installs a kernel driver.
 
-It installs the `omnilab` CLI onto your existing distribution, then checks
-podman, GPU, `dialout` group membership, and the NVIDIA container toolkit,
-printing the exact fix command for anything missing.
+It sets up everything else for you — git, podman, Python venv support
+(`python3-venv`, which Debian ships separately and often omits), and the
+NVIDIA container toolkit — printing each command before it runs. The CLI
+itself goes into a self-contained venv at `~/.local/share/omnilab/venv`,
+linked to `~/.local/bin/omnilab`, so it works on distros that mark the
+system Python externally managed (PEP 668) without touching system
+packages.
 
-**Requirements:** Linux (Ubuntu 22.04+, Fedora 40+, Arch), Python 3.11+,
-podman. macOS and Windows are out of scope for v1 — `podman run
---network host` behaves differently under a podman machine VM, which breaks
-DDS discovery and therefore `omnilab pair`.
+Set `OMNILAB_NO_SUDO=1` to have the privileged commands printed for you to
+run yourself instead.
+
+**Requirements:** Linux (Ubuntu 22.04+, Fedora 40+, Arch, Pop!_OS) and
+Python 3.11+. Everything else is installed for you. macOS and Windows are
+out of scope for v1 — `podman run --network host` behaves differently under
+a podman machine VM, which breaks DDS discovery and therefore
+`omnilab pair`.
 
 <details>
 <summary>Alternatives to the one-liner</summary>
