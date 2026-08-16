@@ -27,13 +27,17 @@ calls:
 
 from __future__ import annotations
 
+import contextlib
+import datetime as dt
 import json
 import math
+import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 DEFAULT_COLLECT_WINDOW_SECONDS = 2.0
 DEFAULT_PODMAN_TIMEOUT_SECONDS = 8.0
@@ -156,8 +160,17 @@ class Snapshot(Node):
                 "parent": t.header.frame_id,
                 "child": t.child_frame_id,
                 "stamp": t.header.stamp.sec + t.header.stamp.nanosec / 1e9,
-                "translation": [t.transform.translation.x, t.transform.translation.y, t.transform.translation.z],
-                "rotation": [t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w],
+                "translation": [
+                    t.transform.translation.x,
+                    t.transform.translation.y,
+                    t.transform.translation.z,
+                ],
+                "rotation": [
+                    t.transform.rotation.x,
+                    t.transform.rotation.y,
+                    t.transform.rotation.z,
+                    t.transform.rotation.w,
+                ],
             })
         self.data["received"].add("/tf")
 
@@ -227,7 +240,9 @@ def detect_container(name: str, runner: Callable[..., subprocess.CompletedProces
 
 
 def _default_runner(args, **kw):  # split out for monkeypatching in tests
-    return subprocess.run(args, **kw)
+    kw.setdefault("check", False)
+    # PLW1510: `check` is set on the line above; ruff can't see through **kw.
+    return subprocess.run(args, **kw)  # noqa: S603, PLW1510
 
 
 # ---- live source ---------------------------------------------------------
@@ -272,7 +287,7 @@ class CalibratedSample:
     must treat all derived classes as unverified.
     """
 
-    state_result: "SampleResult"
+    state_result: SampleResult
     capture_result: CaptureResult
     state_sim_time_s: float | None
     image_sim_time_s: float | None
@@ -347,28 +362,26 @@ class LiveStateSource:
             "--reqtype gz.msgs.StringMsg --reptype gz.msgs.Boolean "
             "--timeout 1500 --req 'data: \"\"'",
         ]
-        try:
+        # Non-fatal — try move_to anyway.
+        with contextlib.suppress(subprocess.TimeoutExpired):
             self._runner(clear_cmd, capture_output=True, text=True, check=False, timeout=4.0)
-        except subprocess.TimeoutExpired:
-            pass  # Non-fatal — try move_to anyway
 
-        import math as _math
         cx, cy, cz = world_position_xyz
         tx, ty, tz = look_at_xyz
         dx, dy, dz = tx - cx, ty - cy, tz - cz
-        yaw = _math.atan2(dy, dx)
-        dist_xy = _math.sqrt(dx * dx + dy * dy)
+        yaw = math.atan2(dy, dx)
+        dist_xy = math.sqrt(dx * dx + dy * dy)
         # Camera looks along its local +X axis (gz convention). Negative
         # pitch tilts the +X axis downward toward the target when the
         # target is BELOW the camera. dz = target_z - camera_z is
         # negative for "target below"; we want pitch to point the
         # camera's forward axis at the target, so pitch = atan2(dz, dist).
-        pitch = _math.atan2(dz, dist_xy)
+        pitch = math.atan2(dz, dist_xy)
         roll = 0.0
         # RPY → quaternion (intrinsic XYZ → x,y,z,w).
-        cr, sr = _math.cos(roll * 0.5), _math.sin(roll * 0.5)
-        cp, sp = _math.cos(pitch * 0.5), _math.sin(pitch * 0.5)
-        cyq, syq = _math.cos(yaw * 0.5), _math.sin(yaw * 0.5)
+        cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+        cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+        cyq, syq = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
         qx = sr * cp * cyq - cr * sp * syq
         qy = cr * sp * cyq + sr * cp * syq
         qz = cr * cp * syq - sr * sp * cyq
@@ -436,11 +449,10 @@ class LiveStateSource:
             return None, f"read_sim_clock rc={r.returncode}: {(r.stderr or '')[:200]}"
         out = r.stdout or ""
         # Parse: 'sim {\n  sec: 1234\n  nsec: 567000000\n}\nreal {...'
-        import re as _re
-        m = _re.search(r"sim\s*\{\s*sec:\s*(\d+)\s*nsec:\s*(\d+)", out, _re.DOTALL)
+        m = re.search(r"sim\s*\{\s*sec:\s*(\d+)\s*nsec:\s*(\d+)", out, re.DOTALL)
         if not m:
             # Fallback: try just sec + nsec at top level (raw Clock msg)
-            m2 = _re.search(r"sec:\s*(\d+)\s*nsec:\s*(\d+)", out)
+            m2 = re.search(r"sec:\s*(\d+)\s*nsec:\s*(\d+)", out)
             if not m2:
                 return None, f"could not parse /clock output: {out[:200]}"
             sec, nsec = int(m2.group(1)), int(m2.group(2))
@@ -489,7 +501,7 @@ class LiveStateSource:
             )
 
         capture_result: CaptureResult
-        sample_result: "SampleResult"
+        sample_result: SampleResult
         t1: float | None = None
         t1_err: str | None = None
         try:
@@ -580,7 +592,6 @@ class LiveStateSource:
           /gui/screenshot   request: gz.msgs.StringMsg (directory)
                             reply:   gz.msgs.Boolean
         """
-        import datetime as _dt
         host_capture_dir.mkdir(parents=True, exist_ok=True)
         container_dir = "/workspace/.omnilab/captures"
 
@@ -597,7 +608,7 @@ class LiveStateSource:
         except subprocess.TimeoutExpired as e:
             return CaptureResult(
                 frame_path=None,
-                captured_at=_dt.datetime.now(_dt.UTC).isoformat(),
+                captured_at=dt.datetime.now(dt.UTC).isoformat(),
                 error=f"pre-snapshot listing timed out: {e}",
             )
         pre_files: set[str] = {
@@ -605,7 +616,7 @@ class LiveStateSource:
         }
 
         # Step 2: actually call the screenshot service.
-        captured_at = _dt.datetime.now(_dt.UTC).isoformat()
+        captured_at = dt.datetime.now(dt.UTC).isoformat()
         svc_cmd = [
             "podman", "exec", self.container_name, "bash", "-c",
             f"gz service -s /gui/screenshot "
@@ -666,8 +677,7 @@ class LiveStateSource:
     def sample(self) -> SampleResult:
         # Run the snapshot script inside the container via stdin. Source
         # ROS first so rclpy is importable.
-        import datetime as _dt
-        started = _dt.datetime.now(_dt.UTC).isoformat()
+        started = dt.datetime.now(dt.UTC).isoformat()
         cmd = [
             "podman", "exec", "-i", self.container_name,
             "bash", "-c",
@@ -690,10 +700,10 @@ class LiveStateSource:
                 topics_missing=list(DEFAULT_TOPIC_SET),
                 collect_window_seconds=self.collect_window_seconds,
                 state_sample_started_at=started,
-                state_sample_ended_at=_dt.datetime.now(_dt.UTC).isoformat(),
+                state_sample_ended_at=dt.datetime.now(dt.UTC).isoformat(),
                 raw_error=f"podman exec timed out: {e}",
             )
-        ended = _dt.datetime.now(_dt.UTC).isoformat()
+        ended = dt.datetime.now(dt.UTC).isoformat()
 
         if r.returncode != 0:
             return SampleResult(
@@ -761,10 +771,7 @@ def _quat_to_rpy_deg(q: list[float]) -> list[float]:
     roll = math.atan2(sinr_cosp, cosr_cosp)
     # Pitch (y-axis rotation)
     sinp = 2 * (w * y - z * x)
-    if abs(sinp) >= 1:
-        pitch = math.copysign(math.pi / 2, sinp)
-    else:
-        pitch = math.asin(sinp)
+    pitch = math.copysign(math.pi / 2, sinp) if abs(sinp) >= 1 else math.asin(sinp)
     # Yaw (z-axis rotation)
     siny_cosp = 2 * (w * z + x * y)
     cosy_cosp = 1 - 2 * (y * y + z * z)

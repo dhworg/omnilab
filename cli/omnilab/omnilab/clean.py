@@ -386,7 +386,7 @@ def execute_plan(plan: CleanupPlan) -> list[tuple[CleanupAction, int]]:
     return results
 
 
-def _do_action(action: CleanupAction, *, aggressive: bool) -> int:
+def _do_action(action: CleanupAction, *, aggressive: bool) -> int:  # noqa: PLR0911
     if action.kind == "container_stop":
         return subprocess.run(
             ["podman", "stop", "--time", "5", action.target],
@@ -433,8 +433,8 @@ def read_inside_container_procs(container_name: str) -> list[tuple[int, str]]:
     if r.returncode != 0:
         return []
     out: list[tuple[int, str]] = []
-    for line in (r.stdout or "").splitlines():
-        line = line.strip()
+    for raw in (r.stdout or "").splitlines():
+        line = raw.strip()
         if not line:
             continue
         parts = line.split(None, 1)

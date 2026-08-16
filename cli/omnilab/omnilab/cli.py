@@ -9,6 +9,7 @@ Honors project-spec-v1.md (rev 3) § "CLI conventions":
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import asdict, replace
 from importlib import resources
@@ -381,7 +382,7 @@ def tune(
 
 
 @app.command()
-def observe(
+def observe(  # noqa: PLR0912, PLR0915
     project_dir: Path = typer.Option(
         Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
     ),
@@ -645,11 +646,9 @@ def observe(
                             if pre_capture_result else None),
                 verification_mode=verification_mode,
             )
-            try:
+            # History persistence is best-effort; never fail observe on it.
+            with contextlib.suppress(OSError):
                 derived_mod.append_history(project_dir, record)
-            except OSError:
-                # History persistence is best-effort; never fail observe on it.
-                pass
 
     summary = engine.tick(
         state,

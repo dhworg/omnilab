@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
 
 # ---- per-robot config ----------------------------------------------------
 
@@ -98,12 +99,10 @@ class DerivedConfig:
     )
 
     @classmethod
-    def load(cls, project_dir: Path) -> "DerivedConfig":
+    def load(cls, project_dir: Path) -> DerivedConfig:
         """Load from project_dir/derived_config.yaml. Returns defaults
         if the file doesn't exist — the layer degrades gracefully.
         """
-        import yaml
-
         cfg_path = project_dir / "derived_config.yaml"
         if not cfg_path.exists():
             return cls()
@@ -168,8 +167,8 @@ def read_recent_history(project_dir: Path, *, n: int = 5) -> list[dict[str, Any]
     if not p.exists():
         return []
     out: list[dict[str, Any]] = []
-    for ln in p.read_text().splitlines()[-n:]:
-        ln = ln.strip()
+    for raw in p.read_text().splitlines()[-n:]:
+        ln = raw.strip()
         if not ln:
             continue
         try:
@@ -208,7 +207,7 @@ def _angular_distance_deg(
     return total
 
 
-def compute_derived(
+def compute_derived(  # noqa: PLR0912, PLR0915
     state: dict[str, Any],
     config: DerivedConfig,
     sim_time_s: float | None,
