@@ -52,6 +52,48 @@ VENDOR_DAEMONS: dict[str, str] = {
     "bumblebeed": "Bumblebee is legacy and conflicts with PRIME offload; consider removing it.",
 }
 
+# Kernel-log signatures worth naming. When nvidia-smi fails, the NVRM lines
+# in the kernel ring buffer say *why*; without them the user is left staring
+# at "nvidia-smi failed" with no next move. Ordered most-specific first.
+#
+# (substring, one-line meaning, what to actually do)
+NVRM_SIGNATURES: tuple[tuple[str, str, str], ...] = (
+    (
+        "API mismatch",
+        "kernel module and userspace library are different driver versions",
+        "A partial upgrade left the loaded module and libnvidia-ml out of sync. "
+        "Reinstall the driver package for your distro and reboot so the new "
+        "module is the one actually loaded.",
+    ),
+    (
+        "probe routine was not called",
+        "another driver claimed the device before NVIDIA could",
+        "Usually nouveau. Blacklist it (`echo 'blacklist nouveau' | sudo tee "
+        "/etc/modprobe.d/blacklist-nouveau.conf`), rebuild the initramfs, reboot.",
+    ),
+    (
+        "fallen off the bus",
+        "the GPU stopped responding on the PCI bus",
+        "A power or hardware fault, not a software one. Cold boot (full power "
+        "off — a warm reboot does not reset the GPU's power state). If it "
+        "recurs, suspect the power delivery or the card itself.",
+    ),
+    (
+        "RmInitAdapter failed",
+        "the driver could not initialize the GPU",
+        "The classic Optimus-laptop failure: the card is enumerated and powered "
+        "but never came up. Cold boot first (full power off, NOT `reboot` — a "
+        "warm reboot leaves the GPU's power state untouched). If it survives "
+        "that, suspect ACPI/runtime-PM or a vendor daemon holding the dGPU off.",
+    ),
+    (
+        "rm_init_adapter failed",
+        "the driver could not initialize the GPU",
+        "Same as RmInitAdapter failed — cold boot (full power off) first.",
+    ),
+)
+
+
 # PRIME render offload. Without these the GL/Vulkan stack on a hybrid
 # laptop silently picks the iGPU (or llvmpipe) even when the dGPU is awake
 # and correctly passed through. This is *the* "driver works, GPU unused"
@@ -144,6 +186,12 @@ class GpuProbe:
     vendor_daemons: frozenset[str] = frozenset()
     container_smi_ok: bool | None = None
     container_renderer: str | None = None
+    # NVRM lines from the kernel ring buffer. `kernel_log_readable` is False
+    # when dmesg/journalctl were both refused (Ubuntu and Pop!_OS ship
+    # kernel.dmesg_restrict=1), so "no errors found" is never confused with
+    # "could not look".
+    nvrm_lines: tuple[str, ...] = ()
+    kernel_log_readable: bool | None = None
 
 
 # ---- pure evaluation -----------------------------------------------------
@@ -207,7 +255,26 @@ def evaluate(probe: GpuProbe) -> list[Check]:  # noqa: PLR0912, PLR0915
             )
         )
     elif probe.runtime_status == "active":
-        checks.append(Check(key="power_state", title="GPU power state", severity="ok", detail="active"))
+        if probe.nvidia_smi_ok:
+            checks.append(Check(key="power_state", title="GPU power state", severity="ok", detail="active"))
+        else:
+            # runtime_status is the *kernel's* PCI power-management view: the
+            # device is enumerated and not runtime-suspended. It says nothing
+            # about whether the driver ever initialized the GPU. Reporting a
+            # green "active" directly above a failed driver check reads as a
+            # contradiction and sends people hunting in the wrong layer.
+            checks.append(
+                Check(
+                    key="power_state",
+                    title="GPU power state",
+                    severity="warn",
+                    detail=(
+                        "kernel reports the device powered and on the bus, but the driver cannot "
+                        "open it — see the driver check below. PCI power state is not a statement "
+                        "about whether the GPU initialized."
+                    ),
+                )
+            )
     else:
         checks.append(
             Check(
@@ -331,23 +398,47 @@ def evaluate(probe: GpuProbe) -> list[Check]:  # noqa: PLR0912, PLR0915
             )
         )
     else:
-        checks.append(
-            Check(
-                key="driver",
-                title="NVIDIA driver responds",
-                severity="fail",
-                detail="nvidia-smi failed or is not installed",
-                fix=Fix(
-                    description="Install or repair the NVIDIA driver",
-                    auto=False,
-                    manual_hint=(
-                        "nvidia-smi did not return. If the modules above loaded, this is usually a "
-                        "driver/userspace-library version mismatch after a partial upgrade — "
-                        "reinstall the driver package for your distro and reboot."
+        matched = classify_nvrm(probe.nvrm_lines)
+        if matched:
+            line, meaning, action = matched
+            checks.append(
+                Check(
+                    key="driver",
+                    title="NVIDIA driver responds",
+                    severity="fail",
+                    detail=f"{meaning} — kernel log says:\n      {line}",
+                    fix=Fix(
+                        description=meaning,
+                        auto=False,
+                        manual_hint=action,
                     ),
-                ),
+                )
             )
-        )
+        else:
+            unreadable = probe.kernel_log_readable is False
+            tail = (
+                "The kernel log could not be read (dmesg is restricted on Ubuntu and Pop!_OS). "
+                "Run `sudo dmesg | grep -i nvrm` — the NVRM lines name the actual cause."
+                if unreadable
+                else "No NVRM errors were found in the kernel log, so the driver most likely "
+                "isn't installed at all, rather than failing to initialize."
+            )
+            checks.append(
+                Check(
+                    key="driver",
+                    title="NVIDIA driver responds",
+                    severity="fail",
+                    detail="nvidia-smi failed or is not installed",
+                    fix=Fix(
+                        description="Identify why the driver will not initialize",
+                        auto=False,
+                        manual_hint=(
+                            "nvidia-smi did not return. If the modules above loaded, the GPU is "
+                            "present but the driver could not bring it up.\n" + tail
+                        ),
+                    ),
+                )
+            )
 
     # 7. Vendor power daemons. Detect and name; never fight them.
     if probe.vendor_daemons:
@@ -515,6 +606,20 @@ def evaluate(probe: GpuProbe) -> list[Check]:  # noqa: PLR0912, PLR0915
     return checks
 
 
+def classify_nvrm(lines: tuple[str, ...] | list[str]) -> tuple[str, str, str] | None:
+    """Pure: match kernel NVRM lines against known signatures.
+
+    Returns (matched_line, meaning, what_to_do) for the first signature that
+    matches, or None. Signature order encodes specificity, not log order —
+    an API mismatch explains an init failure, not the other way round.
+    """
+    for needle, meaning, action in NVRM_SIGNATURES:
+        for line in lines:
+            if needle.lower() in line.lower():
+                return line.strip(), meaning, action
+    return None
+
+
 def summarize(checks: list[Check]) -> dict:
     """Pure: counts + a single overall verdict for `--json` consumers."""
     counts = {"ok": 0, "warn": 0, "fail": 0}
@@ -639,6 +744,24 @@ def _probe_secure_boot() -> bool | None:
     return None
 
 
+def _probe_nvrm() -> tuple[tuple[str, ...], bool]:
+    """Read NVRM lines from the kernel ring buffer.
+
+    Returns (lines, readable). Ubuntu and Pop!_OS ship
+    `kernel.dmesg_restrict=1`, so unprivileged dmesg is refused; journalctl
+    -k works when the user is in systemd-journal or adm. If both are
+    refused we report readable=False rather than an empty result, so
+    "found nothing" is never mistaken for "could not look".
+    """
+    for argv in (["dmesg"], ["journalctl", "-k", "--no-pager", "-b"]):
+        rc, out = _run(argv, timeout=15.0)
+        if rc != 0 or not out.strip():
+            continue
+        lines = tuple(ln.strip() for ln in out.splitlines() if "nvrm" in ln.lower())
+        return lines, True
+    return (), False
+
+
 def _probe_vendor_daemons() -> frozenset[str]:
     active = set()
     for name in VENDOR_DAEMONS:
@@ -665,6 +788,13 @@ def probe_host(*, wake: bool = True) -> GpuProbe:
     smi_ok, driver_version = _probe_driver_version()
     cdi_present, cdi_version = _probe_cdi()
 
+    # Only worth reading the kernel log when the driver is unhappy; it is
+    # the one signal that explains *why* nvidia-smi failed.
+    nvrm_lines: tuple[str, ...] = ()
+    kernel_log_readable: bool | None = None
+    if not smi_ok:
+        nvrm_lines, kernel_log_readable = _probe_nvrm()
+
     return GpuProbe(
         pci_present=pci_present,
         pci_address=pci_address,
@@ -680,6 +810,8 @@ def probe_host(*, wake: bool = True) -> GpuProbe:
         cdi_driver_version=cdi_version,
         secure_boot=_probe_secure_boot(),
         vendor_daemons=_probe_vendor_daemons(),
+        nvrm_lines=nvrm_lines,
+        kernel_log_readable=kernel_log_readable,
     )
 
 

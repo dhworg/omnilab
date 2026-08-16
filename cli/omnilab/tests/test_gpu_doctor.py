@@ -15,6 +15,7 @@ from omnilab.gpu_doctor import (
     GpuProbe,
     apply_fix,
     autofixable,
+    classify_nvrm,
     evaluate,
     fix_argv,
     manual_actions,
@@ -343,3 +344,97 @@ def test_checks_serialize_for_json_mode():
 )
 def test_overall_verdict(overrides, expected):
     assert summarize(evaluate(_healthy(**overrides)))["overall"] == expected
+
+
+# ---- kernel-log diagnosis (the "active but nvidia-smi sees nothing" case) --
+
+
+def test_power_state_not_ok_when_driver_cannot_open_the_gpu():
+    """Reported from a real Pop!_OS box: OmniLab said the GPU was active
+    while nvidia-smi said "No devices were found". Both were true — the
+    kernel's PCI view and NVML's view are different layers — but a green
+    tick above a failed driver check reads as a contradiction.
+    """
+    probe = _healthy(runtime_status="active", nvidia_smi_ok=False)
+    checks = _by_key(evaluate(probe))
+    assert checks["power_state"].severity == "warn"
+    assert "driver cannot open it" in checks["power_state"].detail
+    assert checks["driver"].severity == "fail"
+
+
+def test_power_state_ok_only_when_driver_also_works():
+    assert _by_key(evaluate(_healthy()))["power_state"].severity == "ok"
+
+
+def test_rm_init_adapter_is_named_with_a_cold_boot_hint():
+    probe = _healthy(
+        nvidia_smi_ok=False,
+        kernel_log_readable=True,
+        nvrm_lines=("NVRM: GPU 0000:01:00.0: RmInitAdapter failed! (0x25:0x65:1245)",),
+    )
+    driver = _by_key(evaluate(probe))["driver"]
+    assert "could not initialize" in driver.detail
+    assert "RmInitAdapter failed" in driver.detail
+    assert driver.fix is not None
+    # A warm reboot does not reset the GPU's power state; say so explicitly.
+    assert "Cold boot" in driver.fix.manual_hint
+
+
+def test_api_mismatch_outranks_init_failure():
+    """Signature order is specificity, not log order — a version mismatch
+    explains an init failure, so it must win even when it appears later."""
+    probe = _healthy(
+        nvidia_smi_ok=False,
+        kernel_log_readable=True,
+        nvrm_lines=(
+            "NVRM: GPU 0000:01:00.0: RmInitAdapter failed!",
+            "NVRM: API mismatch: the client has the version 550.120, but this kernel "
+            "module has the version 580.65.06.",
+        ),
+    )
+    driver = _by_key(evaluate(probe))["driver"]
+    assert "different driver versions" in driver.detail
+
+
+def test_nouveau_conflict_is_named():
+    probe = _healthy(
+        nvidia_smi_ok=False,
+        kernel_log_readable=True,
+        nvrm_lines=("NVRM: The NVIDIA probe routine was not called for 1 device(s).",),
+    )
+    driver = _by_key(evaluate(probe))["driver"]
+    assert "another driver claimed the device" in driver.detail
+    assert "nouveau" in driver.fix.manual_hint
+
+
+def test_fallen_off_the_bus_is_named():
+    probe = _healthy(
+        nvidia_smi_ok=False,
+        kernel_log_readable=True,
+        nvrm_lines=("NVRM: GPU 0000:01:00.0: GPU has fallen off the bus.",),
+    )
+    assert "stopped responding on the PCI bus" in _by_key(evaluate(probe))["driver"].detail
+
+
+def test_unreadable_kernel_log_is_not_reported_as_no_errors():
+    """dmesg is restricted on Ubuntu/Pop!_OS. Not being able to look must
+    never be presented as having looked and found nothing."""
+    probe = _healthy(nvidia_smi_ok=False, kernel_log_readable=False, nvrm_lines=())
+    hint = _by_key(evaluate(probe))["driver"].fix.manual_hint
+    assert "could not be read" in hint
+    assert "sudo dmesg" in hint
+
+
+def test_readable_log_with_no_nvrm_lines_suggests_driver_absent():
+    probe = _healthy(nvidia_smi_ok=False, kernel_log_readable=True, nvrm_lines=())
+    hint = _by_key(evaluate(probe))["driver"].fix.manual_hint
+    assert "isn't installed at all" in hint
+
+
+def test_classify_nvrm_returns_none_for_unrelated_lines():
+    assert classify_nvrm(("NVRM: loading NVIDIA UNIX x86_64 Kernel Module 580.65.06",)) is None
+    assert classify_nvrm(()) is None
+
+
+def test_classify_nvrm_is_case_insensitive():
+    assert classify_nvrm(("nvrm: gpu 0000:01:00.0: rm_init_adapter failed!",)) is not None
