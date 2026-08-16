@@ -5,14 +5,19 @@
 #
 # Installs the `omnilab` CLI onto an existing Linux distribution. This
 # script NEVER partitions, formats, or otherwise touches your disk layout,
-# and never installs a kernel driver. It reports what's missing and hands
-# you the exact command; it asks before running anything with sudo.
+# and never installs a kernel driver.
+#
+# It DOES install missing prerequisites for you (git, podman, python venv
+# support, nvidia-container-toolkit) using your distro's package manager,
+# printing each command before it runs. Set OMNILAB_NO_SUDO=1 to have the
+# commands printed for you to run yourself instead.
 #
 # Env overrides:
 #   OMNILAB_REF=<branch|tag>   install from a different ref (default: main)
 #   OMNILAB_REPO=<url>         install from a fork
 #   OMNILAB_NO_TUI=1           skip the textual extra
 #   OMNILAB_ASSUME_YES=1       don't prompt (for CI)
+#   OMNILAB_NO_SUDO=1          never run sudo; print the commands instead
 
 set -euo pipefail
 
@@ -20,6 +25,7 @@ OMNILAB_REPO="${OMNILAB_REPO:-https://github.com/dhworg/omnilab}"
 OMNILAB_REF="${OMNILAB_REF:-main}"
 OMNILAB_ASSUME_YES="${OMNILAB_ASSUME_YES:-0}"
 OMNILAB_NO_TUI="${OMNILAB_NO_TUI:-0}"
+OMNILAB_NO_SUDO="${OMNILAB_NO_SUDO:-0}"
 
 # Subdirectory of the repo containing the Python package.
 CLI_SUBDIR="cli/omnilab"
@@ -49,6 +55,86 @@ confirm() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Run a privileged command automatically, announcing it first. Required
+# dependencies use this; anything optional still goes through confirm().
+# Set OMNILAB_NO_SUDO=1 to be told the command instead of having it run.
+auto_run() {
+  local desc="$1"; shift
+  local cmd="$*"
+  [ -n "$cmd" ] || { warn "$desc — no package command known for '$DISTRO'"; return 1; }
+  if [ "$OMNILAB_NO_SUDO" = "1" ]; then
+    warn "$desc — OMNILAB_NO_SUDO=1, run this yourself:"
+    say  "    ${DIM}${cmd}${RST}"
+    return 1
+  fi
+  if ! have sudo && [ "$(id -u)" != "0" ]; then
+    warn "$desc — sudo is unavailable; run this as root yourself:"
+    say  "    ${DIM}${cmd}${RST}"
+    return 1
+  fi
+  refresh_pkg_index
+  say "  ${DIM}${cmd}${RST}"
+  # shellcheck disable=SC2086
+  eval "$cmd" || { warn "that command failed"; return 1; }
+  return 0
+}
+
+# Whether a *usable* venv can be created — i.e. one that has pip in it.
+#
+# Do NOT probe with `python3 -m venv --help`: on Debian-family systems the
+# venv module is in the stdlib and answers --help happily, while ensurepip
+# lives in the separate python3-venv package. The only honest test is to
+# build a throwaway venv and look for pip inside it.
+venv_works() {
+  local probe rc=1
+  probe="$(mktemp -d 2>/dev/null)" || return 1
+  if python3 -m venv "$probe/v" >/dev/null 2>&1 && [ -x "$probe/v/bin/pip" ]; then
+    rc=0
+  fi
+  rm -rf "$probe"
+  return "$rc"
+}
+
+# Install whatever this distro needs for venv+pip to work, then re-verify.
+ensure_venv_support() {
+  venv_works && return 0
+
+  warn "python3 venv support is incomplete (ensurepip / python3-venv missing)"
+  local pyver pkgs=""
+  pyver="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "")"
+  case "$DISTRO" in
+    ubuntu|debian|linuxmint|pop)
+      # Debian splits ensurepip out into python3-venv. Lead with the
+      # unversioned names: apt aborts the whole transaction if any single
+      # package name is unknown, and python3.X-venv is the one most likely
+      # to be missing on a given release.
+      pkgs="python3-venv python3-pip"
+      ;;
+    fedora|rhel|centos|rocky|almalinux) pkgs="python3-pip" ;;
+    arch|manjaro|endeavouros)           pkgs="python-pip" ;;
+    opensuse*|sles)                     pkgs="python3-pip" ;;
+  esac
+
+  auto_run "installing python venv support" "$(pkg_install_cmd $pkgs)" || true
+
+  if venv_works; then
+    ok "python venv support installed"
+    return 0
+  fi
+
+  # Version-qualified package may have been the only one that mattered and
+  # may have failed alongside a non-existent sibling; try it on its own.
+  if [ -n "$pyver" ]; then
+    case "$DISTRO" in
+      ubuntu|debian|linuxmint|pop)
+        auto_run "installing python${pyver}-venv" "$(pkg_install_cmd python${pyver}-venv)" || true
+        venv_works && { ok "python venv support installed"; return 0; }
+        ;;
+    esac
+  fi
+  return 1
+}
+
 # ---- 0. refuse to run somewhere this can't work -------------------------
 
 step "Checking platform"
@@ -69,6 +155,22 @@ if [ -r /etc/os-release ]; then
 fi
 ok "$DISTRO_NAME"
 
+# Refresh the package index once, lazily — a stale apt cache is the most
+# common cause of "Unable to locate package" on an otherwise fine system.
+APT_UPDATED=0
+refresh_pkg_index() {
+  case "$DISTRO" in
+    ubuntu|debian|linuxmint|pop)
+      [ "$APT_UPDATED" = "1" ] && return 0
+      [ "$OMNILAB_NO_SUDO" = "1" ] && return 0
+      say "  ${DIM}sudo apt-get update${RST}"
+      sudo apt-get update -qq >/dev/null 2>&1 || warn "apt-get update failed; continuing"
+      APT_UPDATED=1
+      ;;
+  esac
+  return 0
+}
+
 # Package-manager install line for a given package, per distro.
 pkg_install_cmd() {
   case "$DISTRO" in
@@ -78,24 +180,6 @@ pkg_install_cmd() {
     opensuse*|sles)                     echo "sudo zypper install -y $*" ;;
     *)                                  echo "" ;;
   esac
-}
-
-# Offer to run a command, but never run sudo silently.
-maybe_run() {
-  local desc="$1"; shift
-  local cmd="$*"
-  if [ -z "$cmd" ]; then
-    warn "$desc — no package command known for '$DISTRO'; install it manually"
-    return 1
-  fi
-  say "  ${DIM}${cmd}${RST}"
-  if confirm "  Run this?"; then
-    # shellcheck disable=SC2086
-    eval "$cmd" || { warn "command failed — continuing"; return 1; }
-    return 0
-  fi
-  warn "skipped — run it yourself before using omnilab"
-  return 1
 }
 
 # ---- 1. prerequisites ---------------------------------------------------
@@ -118,15 +202,16 @@ fi
 if have git; then
   ok "git"
 else
-  warn "git not found"
-  maybe_run "git is required to fetch the CLI" "$(pkg_install_cmd git)" || MISSING=1
+  warn "git not found — required to fetch the CLI"
+  auto_run "installing git" "$(pkg_install_cmd git)" || MISSING=1
 fi
 
 if have podman; then
   ok "podman $(podman --version 2>/dev/null | awk '{print $3}')"
 else
   warn "podman not found — required to run project containers"
-  maybe_run "install podman" "$(pkg_install_cmd podman)" || MISSING=1
+  auto_run "installing podman" "$(pkg_install_cmd podman)" || MISSING=1
+  have podman && ok "podman $(podman --version 2>/dev/null | awk '{print $3}')"
 fi
 
 # ---- 2. install the CLI -------------------------------------------------
@@ -162,17 +247,10 @@ install_with_pipx() {
 install_with_venv() {
   say "  using a managed venv at $OMNILAB_VENV"
 
-  # python3-venv is a separate package on Debian-family distros and is
-  # frequently absent even though python3 is present.
-  if ! python3 -m venv --help >/dev/null 2>&1; then
-    warn "the python3 venv module is unavailable"
-    case "$DISTRO" in
-      ubuntu|debian|linuxmint|pop)
-        maybe_run "install python3-venv" "$(pkg_install_cmd python3-venv python3-full)" || return 1 ;;
-      *)
-        warn "install your distro's python3 venv package, then re-run"; return 1 ;;
-    esac
-  fi
+  ensure_venv_support || {
+    warn "could not get a working python3 venv on this system"
+    return 1
+  }
 
   mkdir -p "$(dirname "$OMNILAB_VENV")" || return 1
   rm -rf "$OMNILAB_VENV"
@@ -248,7 +326,8 @@ if have nvidia-smi; then
   ok "nvidia-smi present"
   if ! have nvidia-ctk; then
     warn "nvidia-container-toolkit not found — containers won't see the GPU"
-    maybe_run "install nvidia-container-toolkit" "$(pkg_install_cmd nvidia-container-toolkit)" || true
+    auto_run "installing nvidia-container-toolkit" "$(pkg_install_cmd nvidia-container-toolkit)" || true
+    have nvidia-ctk && ok "nvidia-container-toolkit installed"
   else
     ok "nvidia-container-toolkit present"
   fi
