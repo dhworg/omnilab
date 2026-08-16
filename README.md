@@ -1,119 +1,164 @@
 # OmniLab
 
-Bootable, immutable Linux OS + CLI for ROS 2 + Gazebo developers.
-Zero-setup, dependency-hell-proof. Also: the first Linux OS where AI
-agents can perceive, act on, and verify robot state — see
-`omnilab observe` in the spec.
+Container + CLI for ROS 2 + Gazebo developers. Zero-setup,
+dependency-hell-proof, **on the Linux machine you already have** — no
+reformat, no dual-boot surgery. Also where AI agents can perceive, act on,
+and verify robot state — see `omnilab observe`.
 
-> **Status:** Phase B.4 in progress (rev 3 architecture). Host is KDE
-> Plasma 6 on Wayland, project image (ROS 2 Jazzy + Gazebo Harmonic)
-> is published to GHCR, CLI v0 ships five commands. See
+> **Status:** architecture rev 5 (container-first delivery). The bootc
+> host ISO is deferred to v2 as an optional appliance — see
+> [why](#why-not-an-iso). Project image (ROS 2 Jazzy + Gazebo Harmonic) is
+> published to GHCR; the CLI ships 15 commands. See
 > [`project-spec-v1.md`](./project-spec-v1.md) and
-> [`CLAUDE.md`](./CLAUDE.md) for what each phase adds.
-
-## What this is
-
-A bootc-based Linux distribution targeted at:
-
-1. **e-Yantra Stage 1 participants** (~6000+/year) — beachhead user.
-2. **Any ROS 2 / Gazebo developer** who wants `dd → boot → working sim` in
-   15 minutes flat.
-3. **AI agents driving robotics dev** — designed-for from day 1.
-
-The host stays small and stable; projects live in pinned OCI containers
-(referenced by SHA256 digest, not tag); both update atomically via
-`bootc upgrade`.
+> [`CLAUDE.md`](./CLAUDE.md).
 
 ## Install
 
-Two ISO variants are produced by CI; you almost certainly want the first.
+```sh
+curl -fsSL https://raw.githubusercontent.com/dhworg/omnilab/main/install.sh | bash
+```
 
-> ⚠️ **HEAVY WARNING — read before flashing:**
->
-> OmniLab is a **whole-disk, single-OS distribution**. The installer
-> targets one disk and rewrites its partition table. Existing data on
-> that disk **is not preserved** — there is no "install alongside
-> Windows" or resize-existing-partition flow that you might know from
-> Ubuntu / Fedora Workstation.
->
-> Use a **dedicated, empty disk** or a **dedicated test machine** that
-> you don't mind erasing. Do **not** install on a drive that holds
-> other operating systems or files you want to keep.
+That's it. The installer **never partitions, formats, or otherwise touches
+your disk layout**, and never runs `sudo` without asking first.
 
-### Interactive (default — production / physical machine)
+It installs the `omnilab` CLI onto your existing distribution, then checks
+podman, GPU, `dialout` group membership, and the NVIDIA container toolkit,
+printing the exact fix command for anything missing.
 
-Two-stage install. No credentials are baked into the image.
+**Requirements:** Linux (Ubuntu 22.04+, Fedora 40+, Arch), Python 3.11+,
+podman. macOS and Windows are out of scope for v1 — `podman run
+--network host` behaves differently under a podman machine VM, which breaks
+DDS discovery and therefore `omnilab pair`.
 
-**Stage 1 — Anaconda (lays down the OS).** `bootc-image-builder`'s
-Anaconda partitions the target disk and writes the OmniLab image. In
-the current builds it may auto-progress through Anaconda's prompts
-without much interaction — that's a known bootc-image-builder quirk
-we're tracking. The important guarantee is no user account is created
-during this stage.
+<details>
+<summary>Alternatives to the one-liner</summary>
 
-**Stage 2 — `initial-setup` (first boot, you create your account).**
-The first time the machine boots after install, `initial-setup` runs
-before SDDM and shows a wizard prompting for:
-  * **Username + password** (yours, picked at first boot)
-  * Timezone
-  * License acceptance
-After you finish the wizard, the system continues to SDDM and you log
-in with what you just created. The wizard never runs again on
-subsequent boots.
+```sh
+# via pipx
+pipx install "omnilab[tui] @ git+https://github.com/dhworg/omnilab@main#subdirectory=cli/omnilab"
 
-This split is how Fedora Server has worked for years; it keeps
-distribution safe (no shared default credentials) regardless of
-Anaconda's interactivity quirks.
+# or pip
+python3 -m pip install --user "omnilab[tui] @ git+https://github.com/dhworg/omnilab@main#subdirectory=cli/omnilab"
 
-1. Open the latest run of the **build-host-iso** workflow on
-   [Actions](https://github.com/dhworg/omnilab/actions/workflows/build-host-iso.yml).
-2. Download the **`omnilab-host-iso-interactive`** artifact from the run
-   page.
-3. Flash to USB (`dd if=…iso of=/dev/diskN bs=4m status=progress` on
-   macOS, or balenaEtcher on any platform).
-4. Boot the target machine from USB, click through Anaconda, install,
-   reboot, eject the medium.
+# install from a branch or fork
+OMNILAB_REF=my-branch OMNILAB_REPO=https://github.com/you/omnilab bash install.sh
+```
 
-### Dev variant (auto-install with placeholder creds — VM iteration only)
+The `[tui]` extra pulls in `textual`, which powers the `omnilab gpu` and
+`omnilab inspect` interfaces. `OMNILAB_NO_TUI=1` skips it.
 
-For fast iteration on the OS itself in a local VM. Auto-installs with
-placeholder credentials from `host/config.toml.dev`; **never use this for
-production or shareable builds**.
+</details>
 
-1. Trigger via [`workflow_dispatch`](https://github.com/dhworg/omnilab/actions/workflows/build-host-iso.yml)
-   with input **`variant: dev`**.
-2. Download the **`omnilab-host-iso-dev`** artifact.
-3. Flash, install — installer does not prompt for user/password.
+## Quickstart
+
+```sh
+omnilab doctor              # verify the host is ready
+omnilab new my-robot        # scaffold a project
+cd my-robot
+omnilab up                  # start the pinned ROS 2 + Gazebo container
+omnilab sim                 # launch the demo TurtleBot3 + nav2 sim
+```
+
+## GPU
+
+If your dGPU "doesn't work", it is usually not a missing driver. It is a
+driver that is installed while **nothing is using it** — the card asleep in
+D3cold, `nvidia_uvm` never loaded (it loads lazily, so CUDA sees nothing
+while `nvidia-smi` looks fine), missing `/dev/nvidia*` nodes, a CDI spec
+gone stale after an update, or everything green and the app still rendering
+on llvmpipe.
+
+```sh
+omnilab gpu                 # interactive UI: Wake GPU / Apply fixes / Re-probe
+omnilab gpu --fix           # headless: apply every auto-fixable repair
+omnilab gpu --json          # structured output for agents
+```
+
+```
+! GPU power state       runtime-suspended (D3cold) — nothing has woken it
+✗ NVIDIA kernel modules missing: nvidia_uvm
+✗ CDI spec              stale — generated for driver 550.120, running 580.65.06
+✗ PRIME render offload  renderer is 'llvmpipe' — rendering on the CPU
+
+4 issue(s) can be fixed automatically — run `omnilab gpu --fix`.
+```
+
+Auto-fixable: waking the GPU, loading modules, creating device nodes,
+regenerating the CDI spec. Deliberately **not** auto-fixed, because no CLI
+can: Secure Boot rejecting unsigned modules, kernel cmdline changes,
+firmware/MUX settings, and vendor daemons (`system76-power`, `supergfxctl`,
+`optimus-manager`) — those get named alongside their switch command. For
+those the win is a 30-second diagnosis instead of a four-hour one.
+
+## Commands
+
+| Group | Commands |
+|---|---|
+| Project | `new`, `template list/show/install`, `up`, `down`, `clean` |
+| Sim & introspection | `sim`, `inspect`, `observe` |
+| GPU & health | `gpu`, `doctor` |
+| Recording | `record`, `replay` |
+| Networking | `pair init/join/status` |
+| Tuning | `tune` |
+
+Every read-only command takes `--json`; destructive ones take `--dry-run`
+and `--yes`. Exit codes: `0` ok · `1` generic · `2` invalid args · `3` state
+· `4` network/auth · `5` permission. The CLI is the agent API.
+
+## Architecture
+
+- **Host** — your own Linux distro. OmniLab supplies the CLI and diagnoses
+  host prerequisites; it does not own your kernel, desktop, or GPU driver.
+- **`omnilab-projects`** — pinned OCI containers with ROS 2 Jazzy + Gazebo
+  Harmonic, referenced by SHA256 digest in `omnilab.yaml`. The dep-hell
+  cure: identical bytes everywhere.
+- **`omnilab-skills`** — optional installable extensions.
+- **Agent perception (`omnilab observe`)** — the differentiator. Reads
+  spatial/physical robot state in real time so AI agents can drive the dev
+  loop. Companion to `omnilab tune` (action) and `omnilab record` (memory).
+
+Full spec: [`project-spec-v1.md`](./project-spec-v1.md).
+
+## Why not an ISO
+
+OmniLab originally shipped as a bootc-based immutable OS. That was dropped
+in [architecture rev 5](./project-spec-v1.md).
+
+bootc is a **whole-machine model and cannot dual-boot safely**. It lays down
+its own ESP + boot + ostree layout and bootupd expects to own the
+bootloader, so the ceiling for even a correctly-configured interactive
+installer is "pick a disk to take over" — not "install alongside your
+existing OS". For a student with one laptop and one disk, those are the same
+sentence. This is structural; no amount of installer polish fixes it.
+
+A container inherits the OS you already run and sidesteps the question
+entirely. The accepted cost is that a container cannot ship a kernel driver,
+so the NVIDIA driver and container toolkit become a documented prerequisite
+— which is exactly what `omnilab gpu` exists to diagnose and repair.
+
+The bootc host image still builds (manual dispatch only) and is retained for
+a possible v2 appliance for users who want the turnkey box. **v1 publishes
+no ISO artifacts.**
+
+## Development
+
+```sh
+cd cli/omnilab
+pip install -e ".[dev,tui]"
+pytest          # 288 tests
+ruff check .
+```
 
 ## Documentation
 
-`docs/` contains the mkdocs-material source. Build locally:
+`docs/` contains the mkdocs-material source:
 
 ```sh
 pip install mkdocs-material
 mkdocs serve
 ```
 
-Hosted docs site: TODO (Phase D, per `project-spec-v1.md`).
-
-## Architecture (TL;DR)
-
-Three layers + one cross-cutting pillar:
-
-- **`omnilab-host`** — Fedora bootc immutable OS. Stable, atomically
-  updated via `bootc upgrade`. Contains kernel, KDE Plasma 6 on Wayland,
-  Podman, GPU drivers, udev rules, the `omnilab` CLI. No ROS.
-- **`omnilab-projects`** — pinned OCI containers with ROS 2 Jazzy +
-  Gazebo Harmonic + extras. Referenced by SHA256 digest in `omnilab.yaml`.
-  The dep-hell cure: identical bytes everywhere.
-- **`omnilab-skills`** — optional installable extensions
-  (LLM log analyzer, future vendor SDKs).
-- **Agent perception (`omnilab observe`)** — the differentiator.
-  Reads spatial/physical robot state in real time so AI agents can drive
-  the dev loop. Companion to `omnilab tune` (action) and `omnilab record`
-  (memory).
-
-Full spec: [`project-spec-v1.md`](./project-spec-v1.md).
+Hosted docs site: TODO (Phase D).
 
 ## License
 
