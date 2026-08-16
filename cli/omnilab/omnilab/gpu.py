@@ -10,13 +10,22 @@ from typing import Literal
 GpuKind = Literal["nvidia", "igpu", "none"]
 
 
+# A dGPU resuming from runtime suspend (D3cold) routinely takes longer than
+# a few seconds — on some laptops 10-20s. The old 5s timeout meant a healthy
+# NVIDIA machine that happened to be idle got misreported as iGPU-only, and
+# `omnilab up` then launched without GPU passthrough. Querying nvidia-smi is
+# also what *wakes* the GPU, so this call has to be allowed to finish.
+_SMI_WAKE_TIMEOUT_SECONDS = 30
+
+
 def detect_gpu() -> GpuKind:
     """Best-effort detection. Returns 'nvidia' if an NVIDIA GPU is reachable
     via nvidia-smi, 'igpu' if /dev/dri exists (Intel/AMD integrated or any
     KMS-managed GPU), else 'none'.
 
-    Detection is intentionally simple in v0; Phase C will refine when the
-    NVIDIA tier verification lands.
+    Note this is deliberately a *coarse* check: it answers "should we pass a
+    GPU through", not "will rendering actually land on it". `omnilab gpu`
+    (gpu_doctor.py) answers the second question.
     """
     if shutil.which("nvidia-smi"):
         try:
@@ -24,7 +33,7 @@ def detect_gpu() -> GpuKind:
                 ["nvidia-smi", "-L"],
                 check=True,
                 capture_output=True,
-                timeout=5,
+                timeout=_SMI_WAKE_TIMEOUT_SECONDS,
             )
             return "nvidia"
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
