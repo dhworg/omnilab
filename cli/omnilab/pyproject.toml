@@ -52,6 +52,7 @@ ignore = [
 "tests/*" = ["PLR2004", "S101", "B008", "E501", "PLC0415"]  # asserts + CliRunner pattern + lazy test imports
 "omnilab/cli.py" = ["B008", "PLC0415"]  # typer needs B008; lazy textual import lives here
 "omnilab/inspect_tui.py" = ["PLC0415"]  # lazy textual import is intentional
+"omnilab/gpu_tui.py" = ["PLC0415"]      # same — textual is an optional extra
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

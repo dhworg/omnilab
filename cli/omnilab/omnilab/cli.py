@@ -1192,6 +1192,117 @@ def inspect(
 
 
 @app.command()
+def gpu(
+    fix: bool = typer.Option(
+        False, "--fix", help="Apply every auto-fixable repair, in ladder order."
+    ),
+    wake: bool = typer.Option(
+        True, "--wake/--no-wake", help="Query nvidia-smi first, which resumes a suspended GPU."
+    ),
+    container: bool = typer.Option(
+        False,
+        "--container",
+        help="Also verify end-to-end by running nvidia-smi + glxinfo inside the project image.",
+    ),
+    project_dir: Path = typer.Option(
+        Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
+    ),
+    tui: bool = typer.Option(True, "--tui/--no-tui", help="Interactive UI (human mode only)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With --fix, print commands without running them."),
+    yes: bool = typer.Option(False, "--yes", help="With --fix, skip the confirmation prompt."),
+) -> None:
+    """Diagnose and repair NVIDIA GPU passthrough.
+
+    The common failure is not a missing driver — it's a driver that's
+    installed while nothing uses it: a suspended dGPU, an unloaded
+    `nvidia_uvm`, missing device nodes, a stale CDI spec, or rendering
+    silently landing on llvmpipe. This walks that ladder from the PCI bus
+    outward and fixes what it can.
+    """
+    from . import gpu_doctor
+
+    probe = gpu_doctor.probe_host(wake=wake)
+
+    if container:
+        manifest = _load_manifest(project_dir)
+        smi_ok, renderer = gpu_doctor.probe_container(manifest.image)
+        probe.container_smi_ok = smi_ok
+        probe.container_renderer = renderer
+
+    checks = gpu_doctor.evaluate(probe)
+    summary = gpu_doctor.summarize(checks)
+
+    if fix:
+        fixable = gpu_doctor.autofixable(checks)
+        if not fixable:
+            _output.emit(
+                human="Nothing to auto-fix.",
+                data={"summary": summary, "checks": [c.to_dict() for c in checks], "applied": []},
+            )
+            return
+
+        _safety.confirm_or_exit(
+            summary=f"Apply {len(fixable)} GPU fix(es):",
+            items=[f"{c.title} — {c.fix.description}" for c in fixable if c.fix],
+            yes=yes,
+            dry_run=dry_run,
+            json_payload={"planned": [c.to_dict() for c in fixable]},
+        )
+
+        applied: list[dict] = []
+        for check in fixable:
+            if check.fix is None:
+                continue
+            ok, lines = gpu_doctor.apply_fix(check.fix, dry_run=dry_run)
+            applied.append({"key": check.key, "ok": ok, "transcript": lines})
+            if not _output.is_json_mode():
+                typer.echo(f"→ {check.fix.description}")
+                for line in lines:
+                    typer.echo(f"   {line}")
+            if not ok:
+                break
+
+        # Re-probe so the caller sees the post-fix state, not the plan.
+        probe = gpu_doctor.probe_host(wake=wake)
+        checks = gpu_doctor.evaluate(probe)
+        summary = gpu_doctor.summarize(checks)
+        _output.emit(
+            human="\n" + gpu_tui_report(checks),
+            data={"summary": summary, "checks": [c.to_dict() for c in checks], "applied": applied},
+        )
+        raise typer.Exit(0 if summary["overall"] != "fail" else 3)
+
+    if _output.is_json_mode():
+        _output.emit(data={"summary": summary, "checks": [c.to_dict() for c in checks]})
+        raise typer.Exit(0 if summary["overall"] != "fail" else 3)
+
+    if tui:
+        # NOTE: typer.Exit subclasses RuntimeError, so the TUI call must sit
+        # outside any `except RuntimeError` or the exit code gets swallowed.
+        rc: int | None = None
+        try:
+            from .gpu_tui import run_tui
+
+            rc = run_tui(initial=probe)
+        except RuntimeError as e:
+            # textual missing — fall through to the plain report rather
+            # than failing a diagnostic command over a UI dependency.
+            typer.echo(f"({e})\n", err=True)
+        if rc is not None:
+            raise typer.Exit(rc)
+
+    typer.echo(gpu_tui_report(checks))
+    raise typer.Exit(0 if summary["overall"] != "fail" else 3)
+
+
+def gpu_tui_report(checks: list) -> str:
+    """Plain-text report — no textual import, safe when the extra is absent."""
+    from .gpu_tui import format_report
+
+    return format_report(checks)
+
+
+@app.command()
 def doctor(  # noqa: PLR0912, PLR0915
     project_dir: Path = typer.Option(
         Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
