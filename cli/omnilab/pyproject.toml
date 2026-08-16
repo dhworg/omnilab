@@ -46,6 +46,9 @@ select = ["E", "F", "I", "B", "UP", "SIM", "PL"]
 ignore = [
   "PLR2004",  # magic numbers — false-positive heavy in tests
   "PLR0913",  # too many args — typer commands legitimately have many
+  "PLR0917",  # same, for positional count: typer.Option params are CLI flags,
+              # not a call-site positional signature. Fires only on newer ruff,
+              # which CI picks up because `ruff>=0.6` is unpinned.
 ]
 
 [tool.ruff.lint.per-file-ignores]
