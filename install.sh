@@ -34,9 +34,14 @@ die()  { printf '%s✗%s %s\n' "$RED" "$RST" "$*" >&2; exit 1; }
 step() { printf '\n%s==>%s %s%s%s\n' "$BOLD" "$RST" "$BOLD" "$*" "$RST"; }
 
 # Prompt unless we're non-interactive or told to assume yes.
+#
+# NOTE: test /dev/tty, NOT stdin. The documented install path is
+# `curl ... | bash`, where stdin is the pipe carrying the script itself and
+# `[ -t 0 ]` is therefore always false — which silently auto-declined every
+# prompt, including the podman install.
 confirm() {
   [ "$OMNILAB_ASSUME_YES" = "1" ] && return 0
-  [ -t 0 ] || return 1
+  [ -r /dev/tty ] || return 1
   printf '%s [y/N] ' "$1"
   read -r reply </dev/tty || return 1
   case "$reply" in [yY]*) return 0 ;; *) return 1 ;; esac
@@ -134,16 +139,53 @@ EXTRAS=""
 # Use the repo subdirectory syntax so pip fetches only what it needs.
 SPEC="git+${OMNILAB_REPO}@${OMNILAB_REF}#subdirectory=${CLI_SUBDIR}"
 
+# Debian, Ubuntu, Pop!_OS, Fedora and Arch all mark the system Python as
+# "externally managed" (PEP 668), which makes `pip install --user` fail
+# outright. A self-contained venv is the only approach that works
+# everywhere without sudo and without touching system packages, so it is
+# the primary path; pipx is preferred when already present because it
+# manages upgrades for you.
+OMNILAB_VENV="${OMNILAB_VENV:-$HOME/.local/share/omnilab/venv}"
+USER_LOCAL_BIN="$HOME/.local/bin"
+
 install_with_pipx() {
   have pipx || return 1
   say "  using pipx"
-  # pipx needs the extras attached to the package name, not the URL.
   if [ -n "$EXTRAS" ]; then
     pipx install --force "omnilab${EXTRAS} @ ${SPEC}" 2>/dev/null \
       || pipx install --force "${SPEC}"
   else
     pipx install --force "${SPEC}"
   fi
+}
+
+install_with_venv() {
+  say "  using a managed venv at $OMNILAB_VENV"
+
+  # python3-venv is a separate package on Debian-family distros and is
+  # frequently absent even though python3 is present.
+  if ! python3 -m venv --help >/dev/null 2>&1; then
+    warn "the python3 venv module is unavailable"
+    case "$DISTRO" in
+      ubuntu|debian|linuxmint|pop)
+        maybe_run "install python3-venv" "$(pkg_install_cmd python3-venv python3-full)" || return 1 ;;
+      *)
+        warn "install your distro's python3 venv package, then re-run"; return 1 ;;
+    esac
+  fi
+
+  mkdir -p "$(dirname "$OMNILAB_VENV")" || return 1
+  rm -rf "$OMNILAB_VENV"
+  python3 -m venv "$OMNILAB_VENV" || return 1
+  "$OMNILAB_VENV/bin/python" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
+  "$OMNILAB_VENV/bin/python" -m pip install --quiet "omnilab${EXTRAS} @ ${SPEC}" 2>/dev/null \
+    || "$OMNILAB_VENV/bin/python" -m pip install --quiet "${SPEC}" || return 1
+
+  # Expose a single entry point on PATH rather than asking the user to
+  # activate anything.
+  mkdir -p "$USER_LOCAL_BIN"
+  ln -sf "$OMNILAB_VENV/bin/omnilab" "$USER_LOCAL_BIN/omnilab"
+  return 0
 }
 
 install_with_pip() {
@@ -154,24 +196,32 @@ install_with_pip() {
 
 if install_with_pipx; then
   ok "installed via pipx"
+elif install_with_venv; then
+  ok "installed into $OMNILAB_VENV (linked as $USER_LOCAL_BIN/omnilab)"
 elif install_with_pip; then
   ok "installed via pip --user"
 else
-  die "installation failed. Try manually:
-   python3 -m pip install --user '${SPEC}'"
+  die "installation failed. Install python3-venv and re-run, or do it manually:
+   python3 -m venv ~/.local/share/omnilab/venv
+   ~/.local/share/omnilab/venv/bin/pip install '${SPEC}'
+   ln -sf ~/.local/share/omnilab/venv/bin/omnilab ~/.local/bin/omnilab"
 fi
 
 # ---- 3. PATH ------------------------------------------------------------
 
 USER_BIN="$(python3 -c 'import site,os;print(os.path.join(site.USER_BASE,"bin"))')"
 if ! have omnilab; then
-  if [ -x "$USER_BIN/omnilab" ]; then
-    warn "$USER_BIN is not on your PATH"
-    say  "  Add this to your shell profile:"
-    say  "    ${DIM}export PATH=\"\$PATH:$USER_BIN\"${RST}"
-    export PATH="$PATH:$USER_BIN"
+  FOUND_IN=""
+  for candidate in "$USER_LOCAL_BIN" "$USER_BIN"; do
+    if [ -x "$candidate/omnilab" ]; then FOUND_IN="$candidate"; break; fi
+  done
+  if [ -n "$FOUND_IN" ]; then
+    warn "$FOUND_IN is not on your PATH"
+    say  "  Add this to your shell profile (~/.bashrc or ~/.zshrc):"
+    say  "    ${DIM}export PATH=\"\$PATH:$FOUND_IN\"${RST}"
+    export PATH="$PATH:$FOUND_IN"
   else
-    die "omnilab installed but not found on PATH — check the pip output above."
+    die "omnilab installed but not found on PATH — check the output above."
   fi
 fi
 ok "$(omnilab version 2>/dev/null || echo 'omnilab (version unknown)')"
