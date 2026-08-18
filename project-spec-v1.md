@@ -1,7 +1,20 @@
 # Project Spec — v1
 
 **Working name:** OmniLab (rename later)
-**Status:** v1 scope locked, architecture rev 5.1 (container-first; Gazebo primary + MuJoCo supported)
+**Status:** v1 scope locked, architecture rev 5.2 (container-first; Gazebo primary + MuJoCo supported incl. visual verification)
+
+> **Amendment 2026-08-18b (rev 5.2):** **MuJoCo visual verification
+> ships after all.** Rev 5.1 parked Layer 2 capture on "MuJoCo has no
+> external capture API" — true but beside the point: the bridge script
+> lives *inside* the sim process, so it can pause physics, render the
+> exact current step offscreen (EGL/OSMesa, smoke-test-proven), and
+> answer a file-based capture protocol under `.omnilab/mujoco_capture/`
+> (no exec channel — /workspace is a bind mount). State and image share
+> one `mj_step` by construction, a strictly stronger simultaneity
+> guarantee than gz's pause-capture-resume. `omnilab observe --capture`
+> therefore reaches `verification_mode: verified` on MuJoCo projects
+> with a bridge; bridge-less projects still degrade to
+> `no_image_source`.
 
 > **Amendment 2026-08-18 (rev 5.1):** **MuJoCo added as a supported
 > simulator** alongside Gazebo Harmonic (which stays primary). Scope is

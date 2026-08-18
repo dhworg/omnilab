@@ -519,11 +519,15 @@ def observe(  # noqa: PLR0912, PLR0915
 
     manifest = _load_manifest(project_dir)
 
-    # Layer 2 frame capture is Gazebo-only: it drives gz GUI/world services,
-    # and MuJoCo's state lives inside the sim process with no external
-    # capture API. Degrade to the numeric path rather than attempting gz
-    # calls that would hang against a MuJoCo container.
-    sim_supports_capture = manifest.simulator == "gazebo"
+    # Frame capture paths differ per simulator. Gazebo: gz GUI/world
+    # services (pause-capture-resume). MuJoCo: the bridge script serves a
+    # file-based capture protocol from inside the sim process — same-step
+    # state+image, so visual verification works there too. What CAN'T
+    # capture is a mujoco project with no bridge (the bare viewer renders
+    # to a window, not to us) — that degrades to the numeric path.
+    sim_supports_capture = manifest.simulator == "gazebo" or (
+        manifest.simulator == "mujoco" and manifest.mujoco.bridge is not None
+    )
     if capture and not sim_supports_capture:
         capture = False
 
@@ -545,7 +549,10 @@ def observe(  # noqa: PLR0912, PLR0915
     from . import observe_sources as srcs
 
     container_name = manifest.name
-    src = srcs.LiveStateSource(container_name)
+    if manifest.simulator == "mujoco":
+        src = srcs.MujocoLiveSource(container_name, project_dir=project_dir)
+    else:
+        src = srcs.LiveStateSource(container_name)
     status = src.status()
 
     state: dict
@@ -638,13 +645,14 @@ def observe(  # noqa: PLR0912, PLR0915
             "against. Verdict is informational only."
         )
     elif not capture and not sim_supports_capture:
-        # Not a user choice — this simulator has no capture path at all.
+        # Not a user choice — nothing in this project can render a frame.
         verification_mode = "no_image_source"
         low_confidence_reason = (
-            f"simulator is {manifest.simulator}, which has no frame-capture "
-            "API — there is no image to verify against. The numeric signature "
-            "is the only signal. Do NOT quote this verdict as a visually "
-            "verified claim about robot physical state."
+            "simulator is mujoco with no bridge configured — the bare viewer "
+            "renders to a window, not to us, so there is no image to verify "
+            "against. Add `mujoco:\n  bridge: <script.py>` for visual "
+            "verification. Do NOT quote this verdict as a visually verified "
+            "claim about robot physical state."
         )
     elif not capture:
         verification_mode = "numeric_only"

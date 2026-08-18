@@ -2,9 +2,9 @@
 # what the bridge publishes: /joint_states maps to joints.<name>.position
 # / .velocity / .effort. See docs/examples/observers/ for richer setups.
 #
-# Note: with simulator: mujoco there is no frame capture, so `omnilab
-# observe` reports these as numeric signatures (verification_mode:
-# no_image_source) — never as visually verified verdicts.
+# Visual verification works here: the bridge pauses physics, renders the
+# exact current step, and answers omnilab observe's capture protocol —
+# so verdicts can reach verification_mode: verified, same as Gazebo.
 
 motion_classes:
   - name: swinging

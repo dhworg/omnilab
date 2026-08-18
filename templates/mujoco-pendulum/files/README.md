@@ -22,7 +22,9 @@ omnilab record        # bag /clock + /joint_states
 
 ## MuJoCo caveats (v1)
 
-- No frame capture: `omnilab observe` reports numeric signatures only
-  (`verification_mode: no_image_source`), never visually verified ones.
+- Visual verification requires the bridge: it pauses physics and renders
+  the exact current step for `omnilab observe --capture`, so state and
+  image share one mj_step (`verification_mode: verified`). Without a
+  bridge (bare viewer), observe degrades to numeric signatures.
 - The `ros-jazzy-mujoco` image is sim-only — no hardware toolchain or
   micro-ROS agent. Use the `ros-jazzy-gz-harmonic` image for hardware.
