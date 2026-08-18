@@ -197,9 +197,13 @@ def run(model_path: str, *, headless: bool) -> int:
     viewer_ctx = None
     if not headless:
         try:
-            import mujoco.viewer
+            # NOT `import mujoco.viewer` — inside a function that binds the
+            # name `mujoco` locally for the WHOLE body, so every earlier
+            # `mujoco.*` call dies with UnboundLocalError (found on the
+            # first live run, in --headless mode of all places).
+            from mujoco import viewer as mj_viewer
 
-            viewer_ctx = mujoco.viewer.launch_passive(model, data)
+            viewer_ctx = mj_viewer.launch_passive(model, data)
         except Exception as e:  # noqa: BLE001 — no display is normal, not fatal
             node.get_logger().warning(f"viewer unavailable ({e}); continuing headless")
 
