@@ -264,7 +264,13 @@ def sim(
         Path.cwd(), "--directory", "-d", help="Project directory (default: cwd)."
     ),
 ) -> None:
-    """Launch the demo TurtleBot3 + nav2 simulation in the running container."""
+    """Launch the project's simulator in the running container.
+
+    gazebo (default): the demo TurtleBot3 + nav2 simulation.
+    mujoco: the model from `mujoco.model`, via `mujoco.bridge` when set
+    (which publishes /clock + /joint_states for observe/inspect/record)
+    or the bare viewer when not.
+    """
     manifest = _load_manifest(project_dir)
     if not container_running(manifest.name):
         _output.emit_error(
@@ -273,15 +279,51 @@ def sim(
             container=manifest.name,
         )
 
-    launch = (
+    try:
+        launch = sim_launch_command(manifest, headless=headless)
+    except ValueError as e:
+        _output.emit_error(str(e), code=2)
+    cmd = ["bash", "-lc", launch]
+    rc = exec_in(manifest.name, cmd)
+    raise typer.Exit(rc)
+
+
+def sim_launch_command(manifest: OmnilabManifest, *, headless: bool = False) -> str:
+    """Pure: the in-container launch line for `omnilab sim`.
+
+    Dispatches on manifest.simulator. Raises ValueError for a mujoco
+    project with no model configured — that's a manifest problem the user
+    can fix, not a state error.
+    """
+    if manifest.simulator == "mujoco":
+        m = manifest.mujoco
+        if not m.model:
+            raise ValueError(
+                "simulator is mujoco but no model is set — add `mujoco:\n  model: <path.xml>` "
+                "to omnilab.yaml (path relative to the project dir)"
+            )
+        if m.bridge:
+            # The bridge steps physics and publishes /clock + /joint_states,
+            # which is what observe/inspect/record consume.
+            line = f"source /opt/ros/jazzy/setup.bash && python3 /workspace/{m.bridge} --model /workspace/{m.model}"
+            if headless:
+                line += " --headless"
+            return line
+        if headless:
+            raise ValueError(
+                "headless mujoco needs a bridge script (the bare viewer is GUI-only) — "
+                "add `mujoco:\n  bridge: <script.py>` to omnilab.yaml"
+            )
+        # Viewer-only fallback: physics runs, nothing is published to ROS.
+        return f"python3 -m mujoco.viewer --mjcf=/workspace/{m.model}"
+
+    line = (
         "source /opt/ros/jazzy/setup.bash && "
         "TURTLEBOT3_MODEL=burger ros2 launch nav2_bringup tb3_simulation_launch.py"
     )
     if headless:
-        launch += " headless:=True"
-    cmd = ["bash", "-lc", launch]
-    rc = exec_in(manifest.name, cmd)
-    raise typer.Exit(rc)
+        line += " headless:=True"
+    return line
 
 
 @app.command()
@@ -476,6 +518,15 @@ def observe(  # noqa: PLR0912, PLR0915
         return
 
     manifest = _load_manifest(project_dir)
+
+    # Layer 2 frame capture is Gazebo-only: it drives gz GUI/world services,
+    # and MuJoCo's state lives inside the sim process with no external
+    # capture API. Degrade to the numeric path rather than attempting gz
+    # calls that would hang against a MuJoCo container.
+    sim_supports_capture = manifest.simulator == "gazebo"
+    if capture and not sim_supports_capture:
+        capture = False
+
     if manifest.observers is None:
         _output.emit_error(
             "no observers: key in omnilab.yaml — add `observers: observers.yaml`",
@@ -585,6 +636,15 @@ def observe(  # noqa: PLR0912, PLR0915
         low_confidence_reason = (
             "Source is canned example state — no live image exists to verify "
             "against. Verdict is informational only."
+        )
+    elif not capture and not sim_supports_capture:
+        # Not a user choice — this simulator has no capture path at all.
+        verification_mode = "no_image_source"
+        low_confidence_reason = (
+            f"simulator is {manifest.simulator}, which has no frame-capture "
+            "API — there is no image to verify against. The numeric signature "
+            "is the only signal. Do NOT quote this verdict as a visually "
+            "verified claim about robot physical state."
         )
     elif not capture:
         verification_mode = "numeric_only"
@@ -1200,7 +1260,7 @@ def inspect(
     from .inspect import build_snapshot
     from .inspect_sources import PodmanExecSources
 
-    sources = PodmanExecSources(manifest.name)
+    sources = PodmanExecSources(manifest.name, simulator=manifest.simulator)
 
     if _output.is_json_mode():
         snapshot = build_snapshot(sources, container=manifest.name)

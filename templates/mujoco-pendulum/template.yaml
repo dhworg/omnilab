@@ -1,0 +1,16 @@
+name: mujoco-pendulum
+description: |
+  MuJoCo starter — a damped pendulum stepped in real time by a small
+  ROS 2 bridge that publishes /clock and /joint_states, so the whole
+  OmniLab agent loop (observe → tune → record) works against MuJoCo.
+  Ships observers.yaml with swinging/settled motion classes and a
+  runaway-spin anomaly.
+version: "1"
+variables:
+  - project_name
+files:
+  - omnilab.yaml
+  - README.md
+  - observers.yaml
+  - sim/pendulum.xml
+  - sim/mujoco_bridge.py

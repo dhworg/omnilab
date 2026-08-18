@@ -1,0 +1,20 @@
+# Agent-perception predicates for the pendulum. State paths come from
+# what the bridge publishes: /joint_states maps to joints.<name>.position
+# / .velocity / .effort. See docs/examples/observers/ for richer setups.
+#
+# Note: with simulator: mujoco there is no frame capture, so `omnilab
+# observe` reports these as numeric signatures (verification_mode:
+# no_image_source) — never as visually verified verdicts.
+
+motion_classes:
+  - name: swinging
+    when: "abs(joints.swing.velocity) > 0.2"
+  - name: settled
+    when: "abs(joints.swing.velocity) <= 0.2 AND abs(joints.swing.position) < 0.15"
+
+anomalies:
+  - name: runaway_spin
+    # A damped pendulum can never exceed this; firing means the physics
+    # blew up (bad timestep edit, external force injection).
+    when: "abs(joints.swing.velocity) > 20"
+    cooldown: 5s

@@ -1,6 +1,9 @@
-# Phase B sub-step 2 CI: build the ros-jazzy-gz-harmonic project image,
-# run the in-image smoke test, and on push to main publish to GHCR as
-# `:latest` and `:sha-<commit>`. PR builds skip the GHCR push.
+# Build every project image (matrix), run each image's in-image smoke
+# test, and on push to main publish to GHCR as `:latest` and
+# `:sha-<commit>`. PR builds skip the GHCR push.
+#
+# Adding an image = new projects/<name>/ dir with Containerfile +
+# smoke-test.sh, plus one matrix entry below.
 #
 # Path-filtered so changes that only touch host/, cli/, etc. don't fire
 # this expensive build.
@@ -20,7 +23,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: dhworg/ros-jazzy-gz-harmonic
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,7 +30,11 @@ concurrency:
 
 jobs:
   build:
-    name: Build + smoke + push (ros-jazzy-gz-harmonic)
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ros-jazzy-gz-harmonic, ros-jazzy-mujoco]
+    name: Build + smoke + push (${{ matrix.image }})
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -42,14 +48,14 @@ jobs:
       - name: Build project image
         run: |
           sudo podman build \
-            --tag ros-jazzy-gz-harmonic:latest \
-            --file projects/ros-jazzy-gz-harmonic/Containerfile \
-            projects/ros-jazzy-gz-harmonic/
-          sudo podman images localhost/ros-jazzy-gz-harmonic
+            --tag "${{ matrix.image }}:latest" \
+            --file "projects/${{ matrix.image }}/Containerfile" \
+            "projects/${{ matrix.image }}/"
+          sudo podman images "localhost/${{ matrix.image }}"
 
       - name: Smoke test
         run: |
-          sudo podman run --rm localhost/ros-jazzy-gz-harmonic:latest \
+          sudo podman run --rm "localhost/${{ matrix.image }}:latest" \
             bash /usr/local/bin/smoke-test.sh
 
       - name: Log in to GHCR
@@ -62,8 +68,10 @@ jobs:
 
       - name: Push project image to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          IMAGE_NAME: dhworg/${{ matrix.image }}
         run: |
-          sudo podman tag localhost/ros-jazzy-gz-harmonic:latest "$REGISTRY/$IMAGE_NAME:latest"
-          sudo podman tag localhost/ros-jazzy-gz-harmonic:latest "$REGISTRY/$IMAGE_NAME:sha-${GITHUB_SHA}"
+          sudo podman tag "localhost/${{ matrix.image }}:latest" "$REGISTRY/$IMAGE_NAME:latest"
+          sudo podman tag "localhost/${{ matrix.image }}:latest" "$REGISTRY/$IMAGE_NAME:sha-${GITHUB_SHA}"
           sudo podman push "$REGISTRY/$IMAGE_NAME:latest"
           sudo podman push "$REGISTRY/$IMAGE_NAME:sha-${GITHUB_SHA}"
