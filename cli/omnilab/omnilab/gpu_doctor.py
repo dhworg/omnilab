@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -182,6 +183,13 @@ class GpuProbe:
     toolkit_present: bool = False
     cdi_spec_present: bool = False
     cdi_driver_version: str = ""
+    # CDI spec ↔ container-engine parser compatibility. New nvidia-ctk
+    # emits CDI 0.7 fields (additionalGids) that podman < 5.x rejects with
+    # a strict-unmarshal error, silently discarding the ENTIRE spec — the
+    # user-visible symptom is "unresolvable CDI devices nvidia.com/gpu=all"
+    # while `nvidia-ctk cdi list` happily shows all devices.
+    cdi_has_additional_gids: bool | None = None
+    podman_version: tuple[int, int] | None = None
     secure_boot: bool | None = None  # None = couldn't tell
     vendor_daemons: frozenset[str] = frozenset()
     container_smi_ok: bool | None = None
@@ -546,6 +554,44 @@ def evaluate(probe: GpuProbe) -> list[Check]:  # noqa: PLR0912, PLR0915
                 )
             )
 
+    # 9b. CDI spec ↔ podman parser compatibility. Proven on Pop!_OS
+    #     2026-08-18: podman 4.9's vendored CDI parser strict-rejects
+    #     `additionalGids` (a 0.7 field new nvidia-ctk always emits),
+    #     discards the whole spec, and every container run dies with
+    #     "unresolvable CDI devices" — while nvidia-ctk cdi list looks
+    #     perfectly healthy, which is what makes it a four-hour bug.
+    if (
+        probe.toolkit_present
+        and probe.cdi_spec_present
+        and probe.cdi_has_additional_gids
+        and probe.podman_version is not None
+        and probe.podman_version < (5, 2)
+    ):
+        checks.append(
+            Check(
+                key="cdi_compat",
+                title="CDI spec compatible with podman's parser",
+                severity="warn",
+                detail=(
+                    f"spec uses CDI 0.7 fields (additionalGids) but podman "
+                    f"{probe.podman_version[0]}.{probe.podman_version[1]} strict-rejects them, "
+                    "discarding the whole spec — containers fail with "
+                    "'unresolvable CDI devices nvidia.com/gpu=all'"
+                ),
+                fix=Fix(
+                    description="Strip CDI 0.7 fields and pin spec version 0.6.0",
+                    argv=[
+                        [sys.executable, "-c", CDI_COMPAT_STRIP_SCRIPT],
+                        # The refresh units resurrect a 0.7 spec in /var/run/cdi
+                        # on every driver event; /etc/cdi stays authoritative.
+                        ["rm", "-f", "/var/run/cdi/nvidia.yaml"],
+                        ["systemctl", "mask", "--now", "nvidia-cdi-refresh.path", "nvidia-cdi-refresh.service"],
+                    ],
+                    needs_root=True,
+                ),
+            )
+        )
+
     # 10. End-to-end: does the container see the GPU?
     if probe.container_smi_ok is not None:
         if probe.container_smi_ok:
@@ -631,6 +677,18 @@ def classify_nvrm(lines: tuple[str, ...] | list[str]) -> tuple[str, str, str] | 
             if needle.lower() in line.lower():
                 return line.strip(), meaning, action
     return None
+
+
+# Strip CDI-0.7-only fields and pin the spec version to what old podman
+# parsers accept. Structural (PyYAML), not sed — additionalGids is a block
+# key with list children.
+CDI_COMPAT_STRIP_SCRIPT = (
+    "import yaml; p='/etc/cdi/nvidia.yaml'; d=yaml.safe_load(open(p));\n"
+    "[e.pop('additionalGids', None) for e in\n"
+    " [dev.get('containerEdits') or {} for dev in d.get('devices', [])]\n"
+    " + [d.get('containerEdits') or {}]];\n"
+    "d['cdiVersion']='0.6.0'; yaml.safe_dump(d, open(p,'w'), sort_keys=False)"
+)
 
 
 def summarize(checks: list[Check]) -> dict:
@@ -745,6 +803,21 @@ def _probe_cdi() -> tuple[bool, str]:
     return True, m.group(1) if m else ""
 
 
+def _probe_cdi_compat() -> bool | None:
+    for path in ("/etc/cdi/nvidia.yaml", "/var/run/cdi/nvidia.yaml"):
+        try:
+            return "additionalGids" in Path(path).read_text()
+        except OSError:
+            continue
+    return None
+
+
+def _probe_podman_version() -> tuple[int, int] | None:
+    rc, out = _run(["podman", "--version"], timeout=5.0)
+    m = re.search(r"(\d+)\.(\d+)", out) if rc == 0 else None
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 def _probe_secure_boot() -> bool | None:
     rc, out = _run(["mokutil", "--sb-state"])
     if rc != 0:
@@ -821,6 +894,8 @@ def probe_host(*, wake: bool = True) -> GpuProbe:
         toolkit_present=shutil.which("nvidia-ctk") is not None,
         cdi_spec_present=cdi_present,
         cdi_driver_version=cdi_version,
+        cdi_has_additional_gids=_probe_cdi_compat(),
+        podman_version=_probe_podman_version(),
         secure_boot=_probe_secure_boot(),
         vendor_daemons=_probe_vendor_daemons(),
         nvrm_lines=nvrm_lines,
