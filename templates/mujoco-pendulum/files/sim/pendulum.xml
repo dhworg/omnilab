@@ -1,0 +1,29 @@
+<!-- Damped pendulum. Starts displaced 90° so it swings on launch and
+     visibly settles over ~30s of sim time — which is exactly what the
+     observers.yaml motion classes (swinging → settled) track. -->
+<mujoco model="pendulum">
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+
+  <worldbody>
+    <light pos="0 -1 2" dir="0 0.5 -1"/>
+    <geom name="floor" type="plane" size="2 2 0.1" rgba="0.9 0.9 0.9 1"/>
+
+    <body name="anchor" pos="0 0 1.5">
+      <geom type="sphere" size="0.02" rgba="0.3 0.3 0.3 1"/>
+      <body name="rod" pos="0 0 0">
+        <!-- The joint the bridge publishes and observers.yaml watches. -->
+        <joint name="swing" type="hinge" axis="0 1 0" damping="0.15"/>
+        <geom type="capsule" fromto="0 0 0  0 0 -0.6" size="0.015"
+              rgba="0.8 0.35 0.1 1" mass="0.1"/>
+        <body name="bob" pos="0 0 -0.6">
+          <geom type="sphere" size="0.06" rgba="0.1 0.35 0.8 1" mass="0.5"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <keyframe>
+    <!-- qpos in radians: start at 90° so there's motion to observe. -->
+    <key name="displaced" qpos="1.5708"/>
+  </keyframe>
+</mujoco>

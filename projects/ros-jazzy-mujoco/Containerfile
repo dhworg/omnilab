@@ -1,0 +1,71 @@
+# projects/ros-jazzy-mujoco — MuJoCo project image.
+# Per spec amendment 2026-08-18: MuJoCo supported alongside Gazebo
+# (primary). Deliberately LEANER than ros-jazzy-gz-harmonic:
+#
+#   - ros-base, not desktop — MuJoCo brings its own viewer; rviz et al.
+#     belong to the Gazebo image.
+#   - no hardware toolchain, no micro-ROS agent — MuJoCo projects are
+#     sim-only in v1. Hardware work uses the gz-harmonic image.
+#
+# What OmniLab needs from this image:
+#   - ros2 CLI + rclpy (observe/inspect/tune/record all drive these)
+#   - Cyclone DDS RMW (spec-pinned)
+#   - mujoco importable by python3, with EGL/OSMesa for headless render
+#     and GLFW for the on-screen viewer
+#
+# End users pin this by SHA256 digest from omnilab.yaml; tags only exist
+# for CI mirrors.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    TZ=Etc/UTC
+
+# --- 1. Base apt + locale -------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg locales \
+        python3-pip \
+    && locale-gen en_US.UTF-8 \
+    && install -d -m 0755 /etc/apt/keyrings \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- 2. ROS 2 Jazzy (ros-base) --------------------------------------------
+RUN curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+        | gpg --dearmor -o /etc/apt/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+        > /etc/apt/sources.list.d/ros2.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ros-jazzy-ros-base \
+        ros-jazzy-rmw-cyclonedds-cpp \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- 3. MuJoCo + render backends -------------------------------------------
+# GL stacks for all three MUJOCO_GL backends: glfw (on-screen viewer via
+# the display passthrough omnilab up sets up), egl (headless GPU render),
+# osmesa (headless CPU render — what CI uses).
+#
+# Ubuntu 24.04 marks the system Python externally managed (PEP 668);
+# --break-system-packages is deliberate here — this is a single-purpose
+# container image, not a user's machine, and mujoco must be importable
+# by plain python3 for bridge scripts.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 libegl1 libosmesa6 libglfw3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m pip install --no-cache-dir --break-system-packages \
+        mujoco==3.3.0
+
+# --- 4. Defaults: RMW pin + auto-source ------------------------------------
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+    ROS_DOMAIN_ID=42
+
+RUN echo 'source /opt/ros/jazzy/setup.bash' >> /etc/bash.bashrc
+
+# Smoke test ships in the image so it can be run via `podman run`
+# without volume mounts. CI invokes it; end users can too.
+COPY smoke-test.sh /usr/local/bin/smoke-test.sh
+RUN chmod +x /usr/local/bin/smoke-test.sh
+
+CMD ["/bin/bash"]

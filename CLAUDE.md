@@ -1,8 +1,9 @@
 # OmniLab — Claude Code session bootstrap
 
 Read this first. Then [`project-spec-v1.md`](./project-spec-v1.md) for the
-full architecture and scope (**architecture rev 5 as of 2026-08-16 —
-container-first delivery**; see the amendment block at the top of the spec).
+full architecture and scope (**architecture rev 5.1 as of 2026-08-18 —
+container-first delivery; Gazebo primary + MuJoCo supported**; see the
+amendment blocks at the top of the spec).
 
 ## Project summary
 
@@ -131,7 +132,7 @@ The CLI is the agent API. Every command honors:
 | ISO/qcow2 build tool | `bootc-image-builder` (v2 appliance only) |
 | Project base | Ubuntu 24.04 |
 | ROS 2 | Jazzy Jalisco (LTS to May 2029) |
-| Simulator | Gazebo Harmonic (LTS to Sep 2028) |
+| Simulator | Gazebo Harmonic (primary); MuJoCo (supported, sim-only — rev 5.1) |
 | Desktop | n/a in v1 (GNOME deferred to the v2 appliance) |
 | Container runtime | Podman + nvidia-container-toolkit |
 | GPU tiers | iGPU (Intel/AMD) baseline; NVIDIA proprietary tier |

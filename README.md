@@ -117,9 +117,10 @@ and `--yes`. Exit codes: `0` ok · `1` generic · `2` invalid args · `3` state
 
 - **Host** — your own Linux distro. OmniLab supplies the CLI and diagnoses
   host prerequisites; it does not own your kernel, desktop, or GPU driver.
-- **`omnilab-projects`** — pinned OCI containers with ROS 2 Jazzy + Gazebo
-  Harmonic, referenced by SHA256 digest in `omnilab.yaml`. The dep-hell
-  cure: identical bytes everywhere.
+- **`omnilab-projects`** — pinned OCI containers referenced by SHA256
+  digest in `omnilab.yaml`: ROS 2 Jazzy + Gazebo Harmonic (primary), or
+  ROS 2 Jazzy + MuJoCo (`simulator: mujoco`). The dep-hell cure: identical
+  bytes everywhere.
 - **`omnilab-skills`** — optional installable extensions.
 - **Agent perception (`omnilab observe`)** — the differentiator. Reads
   spatial/physical robot state in real time so AI agents can drive the dev

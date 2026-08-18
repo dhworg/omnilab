@@ -151,6 +151,20 @@ def parse_service_list_line(line: str) -> ServiceInfo | None:
     return ServiceInfo(name=m.group(1), type=m.group(2))
 
 
+def parse_ros_clock_echo(out: str) -> float | None:
+    """Extract sim time in seconds from `ros2 topic echo --once /clock`.
+
+    Output shape (rosgraph_msgs/Clock):
+        clock:
+          sec: 12
+          nanosec: 340000000
+    """
+    m = re.search(r"sec:\s*(\d+)\s+nanosec:\s*(\d+)", out)
+    if not m:
+        return None
+    return int(m.group(1)) + int(m.group(2)) / 1e9
+
+
 def parse_topic_hz(out: str) -> float | None:
     """Extract average rate (Hz) from `ros2 topic hz` output.
 

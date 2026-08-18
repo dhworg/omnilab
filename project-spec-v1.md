@@ -1,7 +1,22 @@
 # Project Spec — v1
 
 **Working name:** OmniLab (rename later)
-**Status:** v1 scope locked, architecture rev 5 (container-first delivery)
+**Status:** v1 scope locked, architecture rev 5.1 (container-first; Gazebo primary + MuJoCo supported)
+
+> **Amendment 2026-08-18 (rev 5.1):** **MuJoCo added as a supported
+> simulator** alongside Gazebo Harmonic (which stays primary). Scope is
+> deliberate: everything OmniLab does at the ROS layer — observe Layer 1
+> predicates, tune, record, pair, inspect-via-/clock — is simulator-agnostic
+> and works with MuJoCo unchanged; only the edges dispatch on a new
+> `simulator:` manifest field (sim launch, inspect's sim panel, clean's
+> process patterns, observe's capture gate). Not ported: Layer 2 frame
+> capture (gz-service-based; MuJoCo state lives inside the sim process with
+> no external capture API — observe degrades honestly to
+> `verification_mode: no_image_source`) and the hardware toolchain (the
+> `ros-jazzy-mujoco` image is lean and sim-only; hardware work stays on the
+> gz-harmonic image). Ships: the image, a `mujoco-pendulum` template whose
+> bridge publishes /clock + /joint_states, and an embedded `mujoco` manifest
+> template.
 
 > **Amendment 2026-08-16 (rev 5):** Primary v1 delivery vehicle swapped
 > **bootable bootc ISO → installable container + host-installed CLI**. The
@@ -266,6 +281,10 @@ image: ghcr.io/dhworg/ros-jazzy-gz-harmonic@sha256:<digest>
 ros:
   rmw: rmw_cyclonedds_cpp
   domain_id: 42
+simulator: gazebo          # gazebo (default) | mujoco
+mujoco:                    # only for simulator: mujoco
+  model: sim/model.xml     # MJCF, relative to project dir
+  bridge: sim/bridge.py    # publishes /clock + /joint_states
 gazebo:
   default_world: turtlebot3_world.sdf
   defaults:
@@ -353,7 +372,7 @@ environment in 15 minutes, **without modifying the user's disk layout.**
 | CLI distribution | `install.sh` / pipx / pip |
 | Project base | Ubuntu 24.04 (required for ROS 2 Jazzy) |
 | ROS 2 | Jazzy Jalisco (LTS until May 2029) |
-| Simulator | Gazebo Harmonic (LTS, EOL Sep 2028) |
+| Simulator | Gazebo Harmonic (primary; LTS, EOL Sep 2028); MuJoCo (supported, sim-only image) |
 | Desktop | GNOME on Wayland (gdm + gnome-shell) |
 | Container runtime | Podman + nvidia-container-toolkit |
 | GPU tiers | iGPU (Intel/AMD) baseline; NVIDIA proprietary tier |

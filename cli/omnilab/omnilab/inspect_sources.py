@@ -13,6 +13,7 @@ from .inspect import (
     TFFrame,
     TopicInfo,
     parse_node_line,
+    parse_ros_clock_echo,
     parse_service_list_line,
     parse_topic_bw,
     parse_topic_hz,
@@ -33,9 +34,10 @@ class PodmanExecSources:
     is consistent with the rest of the CLI.
     """
 
-    def __init__(self, container: str, *, hz_window: int = 30) -> None:
+    def __init__(self, container: str, *, hz_window: int = 30, simulator: str = "gazebo") -> None:
         self.container = container
         self.hz_window = hz_window
+        self.simulator = simulator
 
     def _exec(self, cmd: str) -> tuple[int, str, str]:
         """Run a bash command inside the container with ROS sourced."""
@@ -126,6 +128,14 @@ class PodmanExecSources:
     # ---- gazebo ---------------------------------------------------------
 
     def get_gazebo_state(self) -> GazeboState:
+        # MuJoCo exposes no gz transport — `gz topic` would just time out.
+        # The bridge publishes /clock, so sim liveness and sim_time come
+        # from there. RTF is unknowable from outside the sim process.
+        if self.simulator == "mujoco":
+            rc, out, _ = self._exec("timeout 3s ros2 topic echo --once /clock 2>&1 || true")
+            sim_time = parse_ros_clock_echo(out) if rc in (0, 124) else None
+            return GazeboState(connected=sim_time is not None, sim_time=sim_time, rtf=None)
+
         # gz topic --list typically takes ~2.1s for its first call after
         # gz sim comes up; the previous 1s timeout always fired,
         # reporting connected=False even when gz was clearly running.

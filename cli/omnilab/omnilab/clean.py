@@ -47,6 +47,10 @@ _SIM_DUPLICATE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("gz sim gui", "gz sim gui"),
     ("parameter_bridge", "ros_gz_bridge parameter_bridge"),
     ("robot_state_publisher", "robot_state_publisher"),
+    # MuJoCo (simulator: mujoco). The bridge script name is the template
+    # convention; the viewer is what a bare `omnilab sim` fallback runs.
+    ("mujoco_bridge", "mujoco ROS bridge"),
+    ("mujoco.viewer", "mujoco viewer"),
 )
 
 

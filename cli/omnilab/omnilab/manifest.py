@@ -57,6 +57,23 @@ class HardwareConfig(BaseModel):
     boards: list[str] = Field(default_factory=list)
 
 
+Simulator = Literal["gazebo", "mujoco"]
+
+
+class MujocoConfig(BaseModel):
+    """MuJoCo project config (simulator: mujoco). Paths are relative to
+    the project dir, which is mounted at /workspace in the container."""
+
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
+    # MJCF model file. Required to launch `omnilab sim`.
+    model: str | None = None
+    # Optional ROS bridge script (steps the sim, publishes /clock +
+    # /joint_states). When absent, `omnilab sim` falls back to the plain
+    # mujoco viewer, which runs the physics but publishes nothing.
+    bridge: str | None = None
+
+
 class PairConfig(BaseModel):
     """Set by `omnilab pair init/join` and persisted in omnilab.yaml."""
 
@@ -78,7 +95,14 @@ class OmnilabManifest(BaseModel):
     host_min_version: str = "0.1.0"
     image: str = Field(min_length=1)
     ros: RosConfig = Field(default_factory=RosConfig)
+    # Which simulator this project drives. Gazebo remains the primary,
+    # full-featured path (Layer 2 frame capture, gz introspection). MuJoCo
+    # is supported at the ROS layer: sim launch, observe Layer 1, tune,
+    # record, inspect-via-/clock all work; capture degrades honestly to
+    # no_image_source. Per spec amendment 2026-08-18.
+    simulator: Simulator = "gazebo"
     gazebo: GazeboConfig = Field(default_factory=GazeboConfig)
+    mujoco: MujocoConfig = Field(default_factory=MujocoConfig)
     gpu: GpuMode = "auto"
     hardware: HardwareConfig = Field(default_factory=HardwareConfig)
     # Path to observers.yaml relative to the project dir. Optional —
