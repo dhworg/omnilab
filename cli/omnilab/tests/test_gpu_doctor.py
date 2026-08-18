@@ -438,3 +438,48 @@ def test_classify_nvrm_returns_none_for_unrelated_lines():
 
 def test_classify_nvrm_is_case_insensitive():
     assert classify_nvrm(("nvrm: gpu 0000:01:00.0: rm_init_adapter failed!",)) is not None
+
+
+# ---- CDI spec ↔ podman parser compatibility ------------------------------
+
+
+def _compat_probe(**overrides):
+    base = {"cdi_has_additional_gids": True, "podman_version": (4, 9)}
+    base.update(overrides)
+    return _healthy(**base)
+
+
+def test_cdi_gids_with_old_podman_warns_with_autofix():
+    """Proven on Pop!_OS: podman 4.9 strict-rejects additionalGids, discards
+    the whole spec, and containers die with 'unresolvable CDI devices' while
+    nvidia-ctk cdi list looks perfectly healthy."""
+    checks = _by_key(evaluate(_compat_probe()))
+    c = checks["cdi_compat"]
+    assert c.severity == "warn"
+    assert "unresolvable CDI devices" in c.detail
+    assert c.fix is not None and c.fix.auto and c.fix.needs_root
+    # Strip script runs under the CLI's own interpreter (guaranteed PyYAML),
+    # not the bare system python3.
+    import sys
+
+    assert c.fix.argv[0][0] == sys.executable
+    assert any("nvidia-cdi-refresh" in " ".join(a) for a in c.fix.argv)
+
+
+def test_cdi_compat_silent_on_new_podman():
+    assert "cdi_compat" not in _by_key(evaluate(_compat_probe(podman_version=(5, 2))))
+
+
+def test_cdi_compat_silent_without_gids():
+    assert "cdi_compat" not in _by_key(evaluate(_compat_probe(cdi_has_additional_gids=False)))
+
+
+def test_cdi_compat_silent_when_unprobed():
+    """None means we couldn't read the spec or podman — don't invent a verdict."""
+    assert "cdi_compat" not in _by_key(evaluate(_compat_probe(podman_version=None)))
+    assert "cdi_compat" not in _by_key(evaluate(_compat_probe(cdi_has_additional_gids=None)))
+
+
+def test_cdi_compat_autofixable():
+    checks = evaluate(_compat_probe())
+    assert "cdi_compat" in {c.key for c in autofixable(checks)}

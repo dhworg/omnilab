@@ -348,6 +348,38 @@ if have nvidia-smi; then
   else
     ok "nvidia-container-toolkit present"
   fi
+
+  # New nvidia-ctk emits CDI 0.7 fields (additionalGids) that podman < 5.2
+  # strict-rejects, silently discarding the WHOLE spec — every container
+  # run then fails with "unresolvable CDI devices nvidia.com/gpu=all"
+  # while nvidia-ctk cdi list looks healthy. Proven on Pop!_OS 2026-08-18.
+  if [ -f /etc/cdi/nvidia.yaml ] && grep -q additionalGids /etc/cdi/nvidia.yaml 2>/dev/null && have podman; then
+    PV="$(podman --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+    if [ -n "$PV" ] && awk -v v="$PV" 'BEGIN{split(v,a,".");exit !(a[1]<5||(a[1]==5&&a[2]<2))}'; then
+      warn "podman $PV rejects the CDI 0.7 fields nvidia-ctk emitted — containers would fail with 'unresolvable CDI devices'"
+      if [ "$OMNILAB_NO_SUDO" = "1" ]; then
+        warn "OMNILAB_NO_SUDO=1 — run \`omnilab gpu --fix\` to repair"
+      else
+        say "  stripping additionalGids + pinning cdiVersion 0.6.0"
+        PYBIN="$OMNILAB_VENV/bin/python"; [ -x "$PYBIN" ] || PYBIN=python3
+        sudo "$PYBIN" - <<'CDIPY'
+import yaml
+p = "/etc/cdi/nvidia.yaml"
+d = yaml.safe_load(open(p))
+for e in [dev.get("containerEdits") or {} for dev in d.get("devices", [])] + [d.get("containerEdits") or {}]:
+    e.pop("additionalGids", None)
+d["cdiVersion"] = "0.6.0"
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+CDIPY
+        sudo rm -f /var/run/cdi/nvidia.yaml
+        # These units resurrect a 0.7 spec on every driver event; /etc/cdi
+        # stays authoritative. `omnilab gpu` repairs stale specs after
+        # driver updates, so auto-refresh is not load-bearing here.
+        sudo systemctl mask --now nvidia-cdi-refresh.path nvidia-cdi-refresh.service >/dev/null 2>&1 || true
+        ok "CDI spec made podman-$PV-compatible"
+      fi
+    fi
+  fi
   say ""
   say "  Run ${BOLD}omnilab gpu${RST} to diagnose and repair GPU passthrough."
   say "  ${DIM}It checks power state, kernel modules, device nodes, the CDI spec,${RST}"
