@@ -326,8 +326,25 @@ if have nvidia-smi; then
   ok "nvidia-smi present"
   if ! have nvidia-ctk; then
     warn "nvidia-container-toolkit not found — containers won't see the GPU"
-    auto_run "installing nvidia-container-toolkit" "$(pkg_install_cmd nvidia-container-toolkit)" || true
-    have nvidia-ctk && ok "nvidia-container-toolkit installed"
+    # NOT in most distros' default repos: Debian-family and Fedora need
+    # NVIDIA's own repository added first, or apt/dnf just says "unable
+    # to locate package". Arch carries it in 'extra'.
+    case "$DISTRO" in
+      ubuntu|debian|linuxmint|pop)
+        NCT_CMD="curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg && curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null && sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit" ;;
+      fedora|rhel|centos|rocky|almalinux)
+        NCT_CMD="sudo dnf config-manager --add-repo https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo && sudo dnf install -y nvidia-container-toolkit" ;;
+      arch|manjaro|endeavouros)
+        NCT_CMD="sudo pacman -S --noconfirm nvidia-container-toolkit" ;;
+      *)
+        NCT_CMD="" ;;
+    esac
+    auto_run "installing nvidia-container-toolkit (adds NVIDIA's repo where needed)" "$NCT_CMD" || true
+    if have nvidia-ctk; then
+      ok "nvidia-container-toolkit installed"
+      # podman resolves nvidia.com/gpu=all through the CDI spec.
+      auto_run "generating the CDI spec" "sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml" || true
+    fi
   else
     ok "nvidia-container-toolkit present"
   fi
