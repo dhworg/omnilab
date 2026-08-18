@@ -32,8 +32,10 @@ import datetime as dt
 import json
 import math
 import re
+import secrets
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -757,6 +759,150 @@ class LiveStateSource:
         result.state_sample_started_at = started
         result.state_sample_ended_at = ended
         return result
+
+
+class MujocoLiveSource(LiveStateSource):
+    """LiveStateSource for `simulator: mujoco` projects.
+
+    ROS sampling is inherited unchanged — the bridge publishes /clock and
+    /joint_states like any other ROS system. What differs is calibration:
+    there is no gz transport to pause worlds or grab frames through.
+    Instead the bridge (which lives inside the sim process) serves a
+    file-based protocol under <project>/.omnilab/mujoco_capture/ — the
+    project dir is bind-mounted at /workspace, so files written by the
+    bridge appear directly on the host with no exec channel:
+
+      1. we write request.json {nonce}          -> bridge pauses physics
+      2. bridge renders the current step        -> frame-<nonce>.png
+         and writes response.json {nonce, sim_time, frame, error}
+      3. we run the normal ROS sample; the bridge keeps republishing the
+         frozen state, so the collect window sees the paused instant
+      4. we delete request.json                 -> bridge resumes
+
+    State and image come from the same mj_step by construction, which is
+    a strictly stronger guarantee than gz's pause-capture-resume.
+    """
+
+    CALIBRATION_METHOD = "bridge_step_capture_v1"
+
+    def __init__(
+        self,
+        container_name: str,
+        *,
+        project_dir: Path,
+        response_timeout_seconds: float = 6.0,
+        **kwargs,
+    ) -> None:
+        super().__init__(container_name, **kwargs)
+        self.project_dir = Path(project_dir)
+        self.capture_dir = self.project_dir / ".omnilab" / "mujoco_capture"
+        self.response_timeout_seconds = response_timeout_seconds
+
+    def apply_camera_pose(self, world_position_xyz, look_at_xyz):  # noqa: ARG002
+        """No-op: the bridge renders MuJoCo's auto-framed free camera.
+        Per-project camera posing is a bridge concern, not a gz service."""
+        return
+
+    def calibrated_sample(  # noqa: PLR0912, PLR0915 — protocol steps read linearly
+        self,
+        host_capture_dir: Path,
+        *,
+        sim_time_skew_tolerance_s: float = 0.05,
+    ) -> CalibratedSample:
+        def _fail(sample: SampleResult, error: str) -> CalibratedSample:
+            return CalibratedSample(
+                state_result=sample,
+                capture_result=CaptureResult(frame_path=None, error=error),
+                state_sim_time_s=None, image_sim_time_s=None,
+                sim_time_skew_s=None,
+                calibrated=False,
+                calibration_method=self.CALIBRATION_METHOD,
+                calibration_error=error,
+            )
+
+        self.capture_dir.mkdir(parents=True, exist_ok=True)
+        nonce = secrets.token_hex(8)
+        request = self.capture_dir / "request.json"
+        response = self.capture_dir / "response.json"
+        try:
+            request.write_text(json.dumps({"nonce": nonce}))
+
+            # 1-2. Wait for the bridge to pause + render.
+            resp = None
+            deadline = time.monotonic() + self.response_timeout_seconds
+            while time.monotonic() < deadline:
+                try:
+                    candidate = json.loads(response.read_text())
+                except (OSError, ValueError):
+                    candidate = None
+                if candidate and candidate.get("nonce") == nonce:
+                    resp = candidate
+                    break
+                time.sleep(0.1)
+
+            if resp is None:
+                return _fail(
+                    self.sample(),
+                    "bridge did not answer the capture request — is `omnilab sim` "
+                    "running with a bridge (mujoco.bridge in omnilab.yaml)?",
+                )
+            if resp.get("error"):
+                return _fail(self.sample(), f"bridge capture failed: {resp['error']}")
+
+            # 3. Sample the paused state through ROS.
+            sample = self.sample()
+            image_sim_time = resp.get("sim_time")
+            state_sim_time = sample.state.get("sim_time")
+
+            frame_src = self.capture_dir / str(resp.get("frame"))
+            frame_path = None
+            capture_error = None
+            if frame_src.exists():
+                host_capture_dir = Path(host_capture_dir)
+                host_capture_dir.mkdir(parents=True, exist_ok=True)
+                dest = host_capture_dir / frame_src.name
+                if frame_src.resolve() != dest.resolve():
+                    dest.write_bytes(frame_src.read_bytes())
+                frame_path = str(dest)
+            else:
+                capture_error = f"bridge reported frame {resp.get('frame')} but it does not exist"
+
+            skew = None
+            calibrated = False
+            calibration_error = capture_error
+            if capture_error is None:
+                if state_sim_time is None:
+                    calibration_error = "/clock missing from the state sample — cannot prove simultaneity"
+                elif image_sim_time is None:
+                    calibration_error = "bridge response carried no sim_time"
+                else:
+                    skew = abs(float(state_sim_time) - float(image_sim_time))
+                    calibrated = skew <= sim_time_skew_tolerance_s
+                    if not calibrated:
+                        calibration_error = (
+                            f"sim_time skew {skew:.3f}s exceeds tolerance "
+                            f"{sim_time_skew_tolerance_s}s — bridge may not have paused"
+                        )
+
+            return CalibratedSample(
+                state_result=sample,
+                capture_result=CaptureResult(
+                    frame_path=frame_path,
+                    sim_time_s=image_sim_time,
+                    error=capture_error,
+                ),
+                state_sim_time_s=state_sim_time,
+                image_sim_time_s=image_sim_time,
+                sim_time_skew_s=skew,
+                calibrated=calibrated,
+                calibration_method=self.CALIBRATION_METHOD,
+                calibration_error=calibration_error,
+            )
+        finally:
+            # 4. Always resume the sim, even on exceptions — a leaked
+            # request file would leave physics frozen forever.
+            with contextlib.suppress(OSError):
+                request.unlink()
 
 
 # ---- mapping: raw rclpy snapshot → predicate-engine state ----------------

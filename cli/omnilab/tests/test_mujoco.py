@@ -194,3 +194,122 @@ def test_repo_template_observers_lint_clean():
     tdir = REPO_ROOT / "templates" / "mujoco-pendulum"
     issues = validate_observers((tdir / "files" / "observers.yaml").read_text())
     assert [i for i in issues if i.level == "error"] == []
+
+
+# ---- visual verification: the bridge capture protocol ----------------------
+
+
+def _mk_source(tmp_path, **kwargs):
+    from omnilab.observe_sources import MujocoLiveSource, SampleResult
+
+    src = MujocoLiveSource("pend", project_dir=tmp_path, response_timeout_seconds=1.0, **kwargs)
+    # Stub the ROS sample — podman isn't exercised here, the protocol is.
+    src.sample = lambda: SampleResult(  # type: ignore[method-assign]
+        state={"sim_time": 12.34, "joints": {"swing": {"position": 0.5, "velocity": 1.2, "effort": 0.0}}},
+        topics_seen=["/clock", "/joint_states"],
+        topics_missing=[],
+        collect_window_seconds=2.0,
+    )
+    return src
+
+
+def _fake_bridge(capture_dir, *, sim_time=12.34, error=None, write_frame=True):
+    """Answer one capture request the way the template bridge does."""
+    import json
+    import threading
+    import time as _t
+
+    def worker():
+        req = capture_dir / "request.json"
+        for _ in range(100):
+            if req.exists():
+                break
+            _t.sleep(0.01)
+        else:
+            return
+        nonce = json.loads(req.read_text())["nonce"]
+        frame_name = f"frame-{nonce}.png"
+        if write_frame and error is None:
+            (capture_dir / frame_name).write_bytes(b"\x89PNG fake")
+        (capture_dir / "response.json").write_text(
+            json.dumps({"nonce": nonce, "sim_time": sim_time, "frame": frame_name, "error": error})
+        )
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    return t
+
+
+def test_bridge_capture_happy_path_is_calibrated(tmp_path):
+    src = _mk_source(tmp_path)
+    t = _fake_bridge(src.capture_dir.mkdir(parents=True) or src.capture_dir)
+    cal = src.calibrated_sample(tmp_path / "captures")
+    t.join(timeout=2)
+    assert cal.calibrated, cal.calibration_error
+    assert cal.calibration_method == "bridge_step_capture_v1"
+    assert cal.sim_time_skew_s == 0.0
+    assert cal.capture_result.frame_path and (tmp_path / "captures").exists()
+    # The request file must be gone — physics resumes.
+    assert not (src.capture_dir / "request.json").exists()
+
+
+def test_bridge_timeout_fails_closed_and_resumes(tmp_path):
+    """No bridge answering → calibrated=False with an actionable error,
+    and the request file is removed so a later-starting bridge isn't
+    frozen by our leftovers."""
+    src = _mk_source(tmp_path)
+    cal = src.calibrated_sample(tmp_path / "captures")
+    assert not cal.calibrated
+    assert "did not answer" in cal.calibration_error
+    assert not (src.capture_dir / "request.json").exists()
+
+
+def test_bridge_render_error_fails_closed(tmp_path):
+    src = _mk_source(tmp_path)
+    src.capture_dir.mkdir(parents=True)
+    t = _fake_bridge(src.capture_dir, error="renderer init failed (osmesa): boom")
+    cal = src.calibrated_sample(tmp_path / "captures")
+    t.join(timeout=2)
+    assert not cal.calibrated
+    assert "renderer init failed" in cal.calibration_error
+
+
+def test_bridge_sim_time_skew_rejected(tmp_path):
+    """Frame from a different instant than the state → not verified."""
+    src = _mk_source(tmp_path)
+    src.capture_dir.mkdir(parents=True)
+    t = _fake_bridge(src.capture_dir, sim_time=11.0)  # state says 12.34
+    cal = src.calibrated_sample(tmp_path / "captures")
+    t.join(timeout=2)
+    assert not cal.calibrated
+    assert cal.sim_time_skew_s == pytest.approx(1.34)
+    assert "skew" in cal.calibration_error
+
+
+def test_stale_response_from_previous_run_is_ignored(tmp_path):
+    """A response.json left by an earlier nonce must not satisfy this one."""
+    import json
+
+    src = _mk_source(tmp_path)
+    src.capture_dir.mkdir(parents=True)
+    (src.capture_dir / "response.json").write_text(
+        json.dumps({"nonce": "stale", "sim_time": 1.0, "frame": "frame-stale.png", "error": None})
+    )
+    cal = src.calibrated_sample(tmp_path / "captures")
+    assert not cal.calibrated
+    assert "did not answer" in cal.calibration_error
+
+
+def test_missing_frame_file_fails_closed(tmp_path):
+    src = _mk_source(tmp_path)
+    src.capture_dir.mkdir(parents=True)
+    t = _fake_bridge(src.capture_dir, write_frame=False)
+    cal = src.calibrated_sample(tmp_path / "captures")
+    t.join(timeout=2)
+    assert not cal.calibrated
+    assert "does not exist" in cal.calibration_error
+
+
+def test_apply_camera_pose_is_a_noop(tmp_path):
+    src = _mk_source(tmp_path)
+    src.apply_camera_pose([1, 2, 3], [0, 0, 0])  # must not touch gz or raise
