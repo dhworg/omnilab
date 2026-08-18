@@ -473,11 +473,24 @@ def evaluate(probe: GpuProbe) -> list[Check]:  # noqa: PLR0912, PLR0915
                     description="Install nvidia-container-toolkit",
                     auto=False,
                     manual_hint=(
-                        "Install the NVIDIA container toolkit for your distro:\n"
-                        "  Fedora/RHEL: sudo dnf install -y nvidia-container-toolkit\n"
-                        "  Ubuntu/Debian: sudo apt-get install -y nvidia-container-toolkit\n"
-                        "  Arch: sudo pacman -S nvidia-container-toolkit\n"
-                        "See https://docs.nvidia.com/datacenter/cloud-native/ for repo setup."
+                        "The toolkit is NOT in most distros' default repos — it ships from "
+                        "NVIDIA's own repository (a bare `apt-get install` fails with "
+                        "'unable to locate package'):\n"
+                        "  Debian / Ubuntu / Pop!_OS:\n"
+                        "    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \\\n"
+                        "      | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg\n"
+                        "    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/"
+                        "nvidia-container-toolkit.list \\\n"
+                        "      | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/"
+                        "nvidia-container-toolkit-keyring.gpg] https://#g' \\\n"
+                        "      | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list\n"
+                        "    sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit\n"
+                        "  Fedora / RHEL:\n"
+                        "    sudo dnf config-manager --add-repo "
+                        "https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo\n"
+                        "    sudo dnf install -y nvidia-container-toolkit\n"
+                        "  Arch: sudo pacman -S nvidia-container-toolkit   (in 'extra', no repo setup needed)\n"
+                        "Then regenerate the CDI spec: sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
                     ),
                 ),
             )
